@@ -1,0 +1,44 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Please search the existing issues first.
+
+        Found a security vulnerability? Do not report it here; follow the [security policy](https://github.com/BonfireTrunk/.github/blob/prime/SECURITY.md) instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release you are using.
+      placeholder: e.g. 2.4.0
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected to happen, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The smallest code or list of steps that shows the problem.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Language or runtime version, operating system, and anything else relevant.
+      placeholder: e.g. Temurin 21.0.5 on Ubuntu 24.04
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or stack trace
+      description: Paste any relevant output. It is formatted as code automatically.
+      render: text

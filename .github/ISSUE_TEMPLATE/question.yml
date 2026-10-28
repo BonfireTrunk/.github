@@ -1,0 +1,11 @@
+name: Question
+description: Ask how to use a project, or why something works the way it does.
+labels: [question]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: Include the project version, and a code example if it helps.
+    validations:
+      required: true

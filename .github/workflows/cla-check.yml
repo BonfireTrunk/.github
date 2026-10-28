@@ -1,0 +1,27 @@
+name: cla-check
+
+# Reusable check: fails a pull request until the contributor ticks the
+# Contributor Agreement box in its description. Skipped for the maintainer
+# and for bots; a skipped job counts as passed for a required check.
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  check:
+    if: >-
+      github.event.pull_request.user.login != 'venkata-kishore' &&
+      github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Look for the ticked agreement box
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if printf '%s\n' "$BODY" | grep -Eq '^[[:space:]]*[-*][[:space:]]+\[[xX]\][[:space:]]+I have read and agree to the \[BonfireTrunk Contributor Agreement v1\]'; then
+            echo "Contributor Agreement v1 accepted."
+          else
+            echo "::error::Tick the Contributor Agreement box in the pull request description, then save it to re-run this check."
+            exit 1
+          fi
