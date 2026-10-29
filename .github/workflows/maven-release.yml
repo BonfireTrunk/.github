@@ -2,10 +2,11 @@ name: maven-release
 
 # Reusable release for BonfireTrunk Maven libraries, called from each library's
 # release.yml on every push to prime and on manual runs.
-# Publishes to Maven Central and GitHub Packages when a release PR titled
+# Publishes to GitHub Packages and then Maven Central when a release PR titled
 # "Release X.Y.Z" is merged into prime. Any other push shows up as a skipped run
 # and never starts a runner. One build feeds both registries, so they receive
-# the same signed files.
+# the same signed files, and a failed GitHub Packages upload stops the release
+# before anything reaches Maven Central.
 # Run the library's release workflow by hand (Actions > release > Run workflow)
 # to retry a failed release. The retry skips each registry that already has the
 # version, then creates the tag and the GitHub release.
@@ -108,7 +109,7 @@ jobs:
           echo "central=$central" >> "$GITHUB_OUTPUT"
           echo "github=$github" >> "$GITHUB_OUTPUT"
 
-      - name: Publish to Maven Central and GitHub Packages
+      - name: Publish to GitHub Packages, then Maven Central
         if: steps.check.outputs.central == 'false' || steps.check.outputs.github == 'false'
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
@@ -137,11 +138,11 @@ jobs:
           </settings>
           EOF
 
-          # The deploy phase uploads to Central; verify alone still builds and signs.
-          goals=deploy
-          [ "$CENTRAL_DONE" = true ] && goals=verify
-          # deploy:deploy then sends the same signed files to GitHub Packages.
+          # verify builds and signs once. Maven then runs the goals in order and stops at the
+          # first failure: GitHub Packages first, Maven Central only once that has succeeded.
+          goals=verify
           [ "$GITHUB_DONE" = false ] && goals="$goals deploy:deploy -DaltDeploymentRepository=github::https://maven.pkg.github.com/$GITHUB_REPOSITORY"
+          [ "$CENTRAL_DONE" = false ] && goals="$goals org.sonatype.central:central-publishing-maven-plugin:publish"
 
           # Central can take longer than the plugin's default 30-minute wait
           ./mvnw -B -ntp -s "$RUNNER_TEMP/settings.xml" -Ppublish -Dgpg.signer=bc -DwaitMaxTime=3600 $ARGS $goals

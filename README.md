@@ -14,7 +14,7 @@ Organization-wide defaults for [BonfireTrunk](https://github.com/BonfireTrunk) r
 | [`.github/workflows/cla-check.yml`](.github/workflows/cla-check.yml) | Reusable workflow that checks the agreement box on pull requests |
 | [`.github/workflows/cla.yml`](.github/workflows/cla.yml) | Runs the agreement check on this repository's own pull requests |
 | [`.github/workflows/maven-build.yml`](.github/workflows/maven-build.yml) | Reusable workflow that builds and tests a Maven library on pull requests |
-| [`.github/workflows/maven-release.yml`](.github/workflows/maven-release.yml) | Reusable workflow that publishes a Maven library to Maven Central and GitHub Packages and creates its GitHub release |
+| [`.github/workflows/maven-release.yml`](.github/workflows/maven-release.yml) | Reusable workflow that publishes a Maven library to GitHub Packages and then Maven Central, and creates its GitHub release |
 
 ## Using the shared workflows
 
@@ -85,6 +85,6 @@ jobs:
     uses: BonfireTrunk/.github/.github/workflows/cla-check.yml@prime
 ```
 
-A release is a pull request titled `Release X.Y.Z` that sets that version in `pom.xml` and adds a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`. Merging it publishes the release to Maven Central and to GitHub Packages. Maven Central is where users get the library; GitHub Packages requires a token even to download public packages. The library also needs the Maven Wrapper (`./mvnw`) and access to the four release secrets, which are organization secrets limited to selected repositories.
+A release is a pull request titled `Release X.Y.Z` that sets that version in `pom.xml` and adds a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`. Merging it publishes the release to GitHub Packages and, once that succeeds, to Maven Central; the tag and GitHub release come last. Maven Central is where users get the library; GitHub Packages requires a token even to download public packages. The library also needs the Maven Wrapper (`./mvnw`) and access to the four release secrets, which are organization secrets limited to selected repositories.
 
 Both shared workflows take an optional `maven-args` input, set with `with:` under the calling job. In `maven-build.yml` it replaces `verify`; in `maven-release.yml` it adds arguments to the publishing build. A library whose tests need a service the runner does not have, such as a Redis server, uses it to skip those tests in both.
