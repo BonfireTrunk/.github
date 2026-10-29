@@ -11,6 +11,11 @@ name: maven-release
 # version, then creates the tag and the GitHub release.
 on:
   workflow_call:
+    inputs:
+      maven-args:
+        description: Extra arguments for the publishing build, such as a switch that skips tests needing services the runner lacks
+        type: string
+        default: ''
     secrets:
       CENTRAL_USERNAME:
         required: true
@@ -113,6 +118,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           CENTRAL_DONE: ${{ steps.check.outputs.central }}
           GITHUB_DONE: ${{ steps.check.outputs.github }}
+          ARGS: ${{ inputs.maven-args }}
         run: |
           cat > "$RUNNER_TEMP/settings.xml" <<'EOF'
           <settings>
@@ -138,7 +144,7 @@ jobs:
           [ "$GITHUB_DONE" = false ] && goals="$goals deploy:deploy -DaltDeploymentRepository=github::https://maven.pkg.github.com/$GITHUB_REPOSITORY"
 
           # Central can take longer than the plugin's default 30-minute wait
-          ./mvnw -B -ntp -s "$RUNNER_TEMP/settings.xml" -Ppublish -Dgpg.signer=bc -DwaitMaxTime=3600 $goals
+          ./mvnw -B -ntp -s "$RUNNER_TEMP/settings.xml" -Ppublish -Dgpg.signer=bc -DwaitMaxTime=3600 $ARGS $goals
 
       - name: Tag and create the GitHub release
         env:
