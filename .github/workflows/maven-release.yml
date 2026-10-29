@@ -1,0 +1,148 @@
+name: maven-release
+
+# Reusable release for BonfireTrunk Maven libraries, called from each library's
+# release.yml on every push to prime and on manual runs.
+# Publishes to Maven Central and GitHub Packages when a release PR titled
+# "Release X.Y.Z" is merged into prime. Any other push shows up as a skipped run
+# and never starts a runner. One build feeds both registries, so they receive
+# the same signed files.
+# Run the library's release workflow by hand (Actions > release > Run workflow)
+# to retry a failed release. The retry skips each registry that already has the
+# version, then creates the tag and the GitHub release.
+on:
+  workflow_call:
+    secrets:
+      CENTRAL_USERNAME:
+        required: true
+      CENTRAL_TOKEN:
+        required: true
+      MAVEN_GPG_KEY:
+        required: true
+      MAVEN_GPG_PASSPHRASE:
+        required: true
+
+permissions: {}
+
+jobs:
+  release:
+    if: >-
+      github.ref == 'refs/heads/prime' &&
+      (github.event_name == 'workflow_dispatch' ||
+       startsWith(github.event.head_commit.message, 'Release '))
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Check version, tag, changelog and registries
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(./mvnw -B -q org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate -Dexpression=project.version -DforceStdout)
+          echo "pom version: $version"
+
+          case "$version" in
+            *-SNAPSHOT) echo "::error::$version is a SNAPSHOT, nothing to release"; exit 1 ;;
+          esac
+
+          if [ "$EVENT" = push ]; then
+            title=${MESSAGE%%$'\n'*}
+            title=${title% (#*)}  # GitHub appends " (#123)" to squash-merge titles
+            if [ "$title" != "Release $version" ]; then
+              echo "::error::Commit title '$title' does not match pom version $version"; exit 1
+            fi
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+            echo "::error::Tag v$version already exists"; exit 1
+          fi
+
+          awk -v h="## [$version]" 'index($0, h) == 1 { found = 1; next } found && /^## \[/ { exit } found { print }' \
+            CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "::error::CHANGELOG.md has no entries under ## [$version]"; exit 1
+          fi
+
+          group=$(./mvnw -B -q org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate -Dexpression=project.groupId -DforceStdout)
+          artifact=$(./mvnw -B -q org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate -Dexpression=project.artifactId -DforceStdout)
+          pom_url="https://repo1.maven.org/maven2/${group//.//}/$artifact/$version/$artifact-$version.pom"
+          status=$(curl -sS -o /dev/null -w '%{http_code}' "$pom_url")
+          case "$status" in
+            200) echo "$version is already on Maven Central, skipping that upload"; central=true ;;
+            404) central=false ;;
+            *) echo "::error::Could not check Maven Central, $pom_url returned $status"; exit 1 ;;
+          esac
+
+          versions_url="https://api.github.com/orgs/$GITHUB_REPOSITORY_OWNER/packages/maven/$group.$artifact/versions?per_page=100"
+          status=$(curl -sS -o "$RUNNER_TEMP/versions.json" -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$versions_url")
+          case "$status" in
+            200) if jq -e --arg v "$version" 'any(.[]; .name == $v)' "$RUNNER_TEMP/versions.json" > /dev/null; then
+                   echo "$version is already on GitHub Packages, skipping that upload"; github=true
+                 else
+                   github=false
+                 fi ;;
+            404) github=false ;;
+            *) echo "::error::Could not check GitHub Packages, $versions_url returned $status"; exit 1 ;;
+          esac
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "central=$central" >> "$GITHUB_OUTPUT"
+          echo "github=$github" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to Maven Central and GitHub Packages
+        if: steps.check.outputs.central == 'false' || steps.check.outputs.github == 'false'
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_TOKEN: ${{ secrets.CENTRAL_TOKEN }}
+          MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CENTRAL_DONE: ${{ steps.check.outputs.central }}
+          GITHUB_DONE: ${{ steps.check.outputs.github }}
+        run: |
+          cat > "$RUNNER_TEMP/settings.xml" <<'EOF'
+          <settings>
+            <servers>
+              <server>
+                <id>central</id>
+                <username>${env.CENTRAL_USERNAME}</username>
+                <password>${env.CENTRAL_TOKEN}</password>
+              </server>
+              <server>
+                <id>github</id>
+                <username>${env.GITHUB_ACTOR}</username>
+                <password>${env.GITHUB_TOKEN}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+          # The deploy phase uploads to Central; verify alone still builds and signs.
+          goals=deploy
+          [ "$CENTRAL_DONE" = true ] && goals=verify
+          # deploy:deploy then sends the same signed files to GitHub Packages.
+          [ "$GITHUB_DONE" = false ] && goals="$goals deploy:deploy -DaltDeploymentRepository=github::https://maven.pkg.github.com/$GITHUB_REPOSITORY"
+
+          # Central can take longer than the plugin's default 30-minute wait
+          ./mvnw -B -ntp -s "$RUNNER_TEMP/settings.xml" -Ppublish -Dgpg.signer=bc -DwaitMaxTime=3600 $goals
+
+      - name: Tag and create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: gh release create "v$VERSION" --target "$GITHUB_SHA" --title "$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
