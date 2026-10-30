@@ -14,7 +14,7 @@ Organization-wide defaults for [BonfireTrunk](https://github.com/BonfireTrunk) r
 | [`.github/workflows/cla-check.yml`](.github/workflows/cla-check.yml) | Reusable workflow that checks the agreement box on pull requests |
 | [`.github/workflows/cla.yml`](.github/workflows/cla.yml) | Runs the agreement check on this repository's own pull requests |
 | [`.github/workflows/maven-build.yml`](.github/workflows/maven-build.yml) | Reusable workflow that builds and tests a Maven library on pull requests, using GitHub Packages for organization artifacts Maven Central lacks |
-| [`.github/workflows/maven-release.yml`](.github/workflows/maven-release.yml) | Reusable workflow that publishes a Maven library to GitHub Packages, tags it with a GitHub release, then publishes it to Maven Central, and publishes snapshots from `prime` to GitHub Packages |
+| [`.github/workflows/maven-release.yml`](.github/workflows/maven-release.yml) | Reusable workflow that publishes a Maven library to GitHub Packages, tags it with a GitHub release, then publishes it to Maven Central, and publishes a snapshot to GitHub Packages when a merge asks for one |
 
 ## Using the shared workflows
 
@@ -91,7 +91,7 @@ Both shared workflows take an optional `maven-args` input, set with `with:` unde
 
 ### GitHub Packages as a fallback
 
-Every push to `prime` that is not a release publishes the library's `-SNAPSHOT` version to GitHub Packages. Pull request builds look for `today.bonfire.oss` artifacts on Maven Central first and on GitHub Packages second, so a library can build against another library's snapshot, or against a release that Central has not accepted yet, without waiting for a Central release. Nothing else is ever downloaded from GitHub Packages. The workflow token is enough to read the organization's public packages, so a library's `build.yml` needs no extra permission or secret.
+A pull request whose title starts with `Snapshot:` (for example `Snapshot: Add a borrow timeout`) publishes the library's `-SNAPSHOT` version to GitHub Packages when it is merged into `prime`. Other merges publish nothing, so snapshots exist only where a dependent library needs one. Pull request builds look for `today.bonfire.oss` artifacts on Maven Central first and on GitHub Packages second, so a library can build against another library's snapshot, or against a release that Central has not accepted yet, without waiting for a Central release. Nothing else is ever downloaded from GitHub Packages. The workflow token is enough to read the organization's public packages, so a library's `build.yml` needs no extra permission or secret.
 
 A release resolves from Maven Central alone and fails early if it depends on a SNAPSHOT, so a published library never depends on something its users cannot download. Before releasing a library that was built against another library's snapshot, release that library and switch to its release version.
 

@@ -5,10 +5,12 @@ name: maven-release
 # When a release PR titled "Release X.Y.Z" is merged into prime, the library is
 # built and signed once, published to GitHub Packages, tagged vX.Y.Z with a
 # GitHub release, and then uploaded to Maven Central. Within a run, both
-# registries receive the same signed files. Any other push publishes the
-# -SNAPSHOT version on prime to GitHub Packages, where other libraries' pull
-# request builds can use it. A release resolves from Maven Central alone and
-# refuses SNAPSHOT dependencies, so it never needs anything users cannot get.
+# registries receive the same signed files. When a PR titled "Snapshot: ..." is
+# merged, the -SNAPSHOT version on prime is published to GitHub Packages, where
+# other libraries' pull request builds can use it. Any other push shows up as a
+# skipped run and never starts a runner. A release resolves from Maven Central
+# alone and refuses SNAPSHOT dependencies, so it never needs anything users
+# cannot get.
 # To retry or finish a release, re-run its failed job, or run the library's
 # release workflow by hand (Actions > release > Run workflow) on prime or on the
 # tag vX.Y.Z. Whatever already happened is skipped: a registry that has the
@@ -214,7 +216,7 @@ jobs:
   snapshot:
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/prime' &&
-      !startsWith(github.event.head_commit.message, 'Release ')
+      startsWith(github.event.head_commit.message, 'Snapshot:')
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -238,7 +240,7 @@ jobs:
           version=$(./mvnw -B -q org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate -Dexpression=project.version -DforceStdout)
           case "$version" in
             *-SNAPSHOT) ;;
-            *) echo "$version is not a SNAPSHOT, so there is no snapshot to publish"; exit 0 ;;
+            *) echo "::error::The title asks for a snapshot, but the pom version $version is not a SNAPSHOT"; exit 1 ;;
           esac
 
           # The same resolution as maven-build.yml, so a snapshot that depends on
