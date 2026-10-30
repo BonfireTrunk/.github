@@ -19,7 +19,7 @@ jobs:
             "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/simple-object-pool/3.0.0/simple-object-pool-3.0.0.pom" \
             "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/jedis/8.0.2/jedis-8.0.2.pom" \
             "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/simple-object-pool/9.9.9/simple-object-pool-9.9.9.pom"; do
-            echo "$(curl -g -sS -o /dev/null -w '%{http_code}' -u "$GITHUB_ACTOR:$GH_TOKEN" "$url") $url"
+            echo "$(curl -g -sS -L -o "$RUNNER_TEMP/f" -w '%{http_code} %{num_redirects} %{url_effective}' -u "$GITHUB_ACTOR:$GH_TOKEN" "$url" | sed -E 's/[?].*//') bytes=$(wc -c < "$RUNNER_TEMP/f") $(grep -o -m1 '<artifactId>[^<]*' "$RUNNER_TEMP/f" | head -1) $url"
           done
 
   contents-read-only:
@@ -36,5 +36,5 @@ jobs:
             "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/simple-object-pool/3.0.0/simple-object-pool-3.0.0.pom" \
             "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/jedis/8.0.2/jedis-8.0.2.pom" \
             "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/simple-object-pool/9.9.9/simple-object-pool-9.9.9.pom"; do
-            echo "$(curl -g -sS -o /dev/null -w '%{http_code}' -u "$GITHUB_ACTOR:$GH_TOKEN" "$url") $url"
+            echo "$(curl -g -sS -L -o "$RUNNER_TEMP/f" -w '%{http_code} %{num_redirects} %{url_effective}' -u "$GITHUB_ACTOR:$GH_TOKEN" "$url" | sed -E 's/[?].*//') bytes=$(wc -c < "$RUNNER_TEMP/f") $(grep -o -m1 '<artifactId>[^<]*' "$RUNNER_TEMP/f" | head -1) $url"
           done
