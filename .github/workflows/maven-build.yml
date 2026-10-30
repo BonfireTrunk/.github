@@ -3,6 +3,8 @@ name: maven-build
 # Reusable build for BonfireTrunk Maven libraries, called from each library's
 # build.yml on pull requests. Runs with a read-only token and no secrets, so a
 # contributor's code cannot publish anything or reach the release keys.
+# BonfireTrunk artifacts that Maven Central does not have, such as snapshots or a
+# release Central has not accepted yet, are downloaded from GitHub Packages.
 on:
   workflow_call:
     inputs:
@@ -32,4 +34,55 @@ jobs:
       - name: Build and test
         env:
           ARGS: ${{ inputs.maven-args }}
-        run: ./mvnw -B -ntp $ARGS
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # Repositories in settings are searched before the POM's, so Central is
+          # listed first to stay the source for everything it has. GitHub Packages
+          # needs a token even for public packages; the workflow token can read the
+          # public packages of every repository in the organization. The same block
+          # is in maven-release.yml for snapshots.
+          cat > "$RUNNER_TEMP/settings.xml" <<'EOF'
+          <settings>
+            <servers>
+              <server>
+                <id>github</id>
+                <username>${env.GITHUB_ACTOR}</username>
+                <password>${env.GITHUB_TOKEN}</password>
+              </server>
+            </servers>
+            <profiles>
+              <profile>
+                <id>github-packages</id>
+                <repositories>
+                  <repository>
+                    <id>central</id>
+                    <url>https://repo.maven.apache.org/maven2</url>
+                    <snapshots>
+                      <enabled>false</enabled>
+                    </snapshots>
+                  </repository>
+                  <repository>
+                    <id>github</id>
+                    <url>https://maven.pkg.github.com/${env.GITHUB_REPOSITORY_OWNER}/*</url>
+                    <snapshots>
+                      <enabled>true</enabled>
+                      <updatePolicy>always</updatePolicy>
+                    </snapshots>
+                  </repository>
+                </repositories>
+              </profile>
+            </profiles>
+            <activeProfiles>
+              <activeProfile>github-packages</activeProfile>
+            </activeProfiles>
+          </settings>
+          EOF
+          # GitHub Packages serves only BonfireTrunk's own groupId; every other
+          # artifact must come from Central.
+          mkdir -p "$RUNNER_TEMP/rrf"
+          echo today.bonfire.oss > "$RUNNER_TEMP/rrf/groupId-github.txt"
+
+          ./mvnw -B -ntp -s "$RUNNER_TEMP/settings.xml" \
+            -Daether.remoteRepositoryFilter.groupId=true \
+            -Daether.remoteRepositoryFilter.groupId.basedir="$RUNNER_TEMP/rrf" \
+            $ARGS
