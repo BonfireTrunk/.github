@@ -5,8 +5,10 @@ name: maven-release
 # When a release PR titled "Release X.Y.Z" is merged into prime, the library is
 # built and signed once, published to GitHub Packages, tagged vX.Y.Z with a
 # GitHub release, and then uploaded to Maven Central. Within a run, both
-# registries receive the same signed files. Any other push shows up as a skipped
-# run and never starts a runner.
+# registries receive the same signed files. Any other push publishes the
+# -SNAPSHOT version on prime to GitHub Packages, where other libraries' pull
+# request builds can use it. A release resolves from Maven Central alone and
+# refuses SNAPSHOT dependencies, so it never needs anything users cannot get.
 # To retry or finish a release, re-run its failed job, or run the library's
 # release workflow by hand (Actions > release > Run workflow) on prime or on the
 # tag vX.Y.Z. Whatever already happened is skipped: a registry that has the
@@ -76,6 +78,10 @@ jobs:
 
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match pom version $version"; exit 1
+          fi
+
+          if ! ./mvnw -B -ntp -q org.apache.maven.plugins:maven-enforcer-plugin:3.6.3:enforce -Denforcer.rules=requireReleaseDeps; then
+            echo "::error::$version depends on a SNAPSHOT; release that dependency to Maven Central and depend on the release first"; exit 1
           fi
 
           # An annotated tag is listed twice, the second time as ^{} with the commit it
@@ -204,3 +210,80 @@ jobs:
               echo "::error::Central deployment $id was still $state after an hour"; exit 1
             fi
           done
+
+  snapshot:
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/prime' &&
+      !startsWith(github.event.head_commit.message, 'Release ')
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build and publish the snapshot to GitHub Packages
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ARGS: ${{ inputs.maven-args }}
+        run: |
+          version=$(./mvnw -B -q org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate -Dexpression=project.version -DforceStdout)
+          case "$version" in
+            *-SNAPSHOT) ;;
+            *) echo "$version is not a SNAPSHOT, so there is no snapshot to publish"; exit 0 ;;
+          esac
+
+          # The same resolution as maven-build.yml, so a snapshot that depends on
+          # another library's snapshot builds here too.
+          cat > "$RUNNER_TEMP/settings.xml" <<'EOF'
+          <settings>
+            <servers>
+              <server>
+                <id>github</id>
+                <username>${env.GITHUB_ACTOR}</username>
+                <password>${env.GITHUB_TOKEN}</password>
+              </server>
+            </servers>
+            <profiles>
+              <profile>
+                <id>github-packages</id>
+                <repositories>
+                  <repository>
+                    <id>central</id>
+                    <url>https://repo.maven.apache.org/maven2</url>
+                    <snapshots>
+                      <enabled>false</enabled>
+                    </snapshots>
+                  </repository>
+                  <repository>
+                    <id>github</id>
+                    <url>https://maven.pkg.github.com/${env.GITHUB_REPOSITORY_OWNER}/*</url>
+                    <snapshots>
+                      <enabled>true</enabled>
+                      <updatePolicy>always</updatePolicy>
+                    </snapshots>
+                  </repository>
+                </repositories>
+              </profile>
+            </profiles>
+            <activeProfiles>
+              <activeProfile>github-packages</activeProfile>
+            </activeProfiles>
+          </settings>
+          EOF
+          mkdir -p "$RUNNER_TEMP/rrf"
+          echo today.bonfire.oss > "$RUNNER_TEMP/rrf/groupId-github.txt"
+
+          ./mvnw -B -ntp -s "$RUNNER_TEMP/settings.xml" \
+            -Daether.remoteRepositoryFilter.groupId=true \
+            -Daether.remoteRepositoryFilter.groupId.basedir="$RUNNER_TEMP/rrf" \
+            $ARGS verify deploy:deploy \
+            -DaltDeploymentRepository=github::https://maven.pkg.github.com/$GITHUB_REPOSITORY
