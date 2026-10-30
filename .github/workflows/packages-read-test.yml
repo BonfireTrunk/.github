@@ -1,0 +1,40 @@
+name: packages-read-test
+
+on:
+  pull_request:
+
+jobs:
+  packages-read:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Download packages published from other repositories
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for url in \
+            "https://maven.pkg.github.com/BonfireTrunk/simple-object-pool/today/bonfire/oss/simple-object-pool/3.0.0/simple-object-pool-3.0.0.pom" \
+            "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/simple-object-pool/3.0.0/simple-object-pool-3.0.0.pom" \
+            "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/jedis/8.0.2/jedis-8.0.2.pom" \
+            "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/simple-object-pool/9.9.9/simple-object-pool-9.9.9.pom"; do
+            echo "$(curl -g -sS -o /dev/null -w '%{http_code}' -u "$GITHUB_ACTOR:$GH_TOKEN" "$url") $url"
+          done
+
+  contents-read-only:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - name: Download packages published from other repositories
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for url in \
+            "https://maven.pkg.github.com/BonfireTrunk/simple-object-pool/today/bonfire/oss/simple-object-pool/3.0.0/simple-object-pool-3.0.0.pom" \
+            "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/simple-object-pool/3.0.0/simple-object-pool-3.0.0.pom" \
+            "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/jedis/8.0.2/jedis-8.0.2.pom" \
+            "https://maven.pkg.github.com/BonfireTrunk/*/today/bonfire/oss/simple-object-pool/9.9.9/simple-object-pool-9.9.9.pom"; do
+            echo "$(curl -g -sS -o /dev/null -w '%{http_code}' -u "$GITHUB_ACTOR:$GH_TOKEN" "$url") $url"
+          done
