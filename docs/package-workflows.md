@@ -110,9 +110,9 @@ The workflows refuse layouts they cannot publish safely:
 | :-- | :-- |
 | Go | One root `go.mod`, no `go.work`. Its module must be `github.com/<owner>/<repository>` for v0/v1, or the same path ending `/vN` for v2 and later. |
 | npm | One root public `package.json`, no `workspaces`, and a committed `package-lock.json`. The package is scoped as `@<lowercase-github-owner>/<name>`, and both root version fields in the lockfile equal the manifest version. Its `repository` is exactly `https://github.com/<owner>/<repository>`, optionally with `.git` or `git+https://...git`; `publishConfig` is absent or exactly `{ "access": "public" }`. |
-| Rust | One root `Cargo.toml` with `[package]`, no workspace, and a committed `Cargo.lock`. The manifest permits only `crates-io` publishing. Git, path, alternate-registry, and registry-index artifact dependencies are unsupported. |
+| Rust | One root `Cargo.toml` with `[package]`, no workspace, and a committed `Cargo.lock`. The manifest permits `crates-io` publishing. Packaged dependencies must resolve from crates.io. Cargo artifact dependencies are unsupported. |
 
-The caller repository must be public. Protect its default branch and release tags so only reviewed changes can reach this workflow. The release job always names a GitHub environment: `release` by default, or the nonempty `release-environment` input. Create that matching environment in every caller repository. Approval rules are optional and are configured by the repository owner; the reusable workflow does not create or relax repository, tag, or environment protection rules.
+The caller repository must be public. Protect its default branch and release tags so only reviewed changes can reach this workflow. The release job always names a GitHub environment: `release` by default, or the nonempty `release-environment` input. Create and configure that matching environment in every caller repository before publishing. GitHub can automatically create a missing environment without protection, so naming it alone is not an approval gate. Required reviewers and branch/tag restrictions are configured by the repository owner.
 
 ## Registry setup
 
@@ -138,7 +138,7 @@ Go modules have no GitHub Packages publishing step. A semantic Git tag and publi
 
 Before a release changes a registry, it verifies the release title or retry tag, the commit, manifest, changelog, version, and any existing tag. The build job creates one release bundle containing the notes and, where applicable, the package archive. It passes that one immutable GitHub Actions artifact to the publish job by artifact ID. The GitHub release stores the same bundle with its SHA-256 digest.
 
-Rerunning the original workflow run uses its original artifact ID. A new dispatch or rerun that begins before a GitHub release bundle exists builds again; if that conflicts with a registry record, it fails rather than replacing the record. Once the GitHub release asset exists, retries restore that exact bundle instead of rebuilding. Every path verifies embedded checksums and fails if an existing registry version or GitHub release asset has different bytes. This preserves the ordering below while allowing safe recovery from transient failures:
+Rerunning only the failed publish job uses its original artifact ID. A new dispatch or a rerun of all jobs that begins before a GitHub release bundle exists builds again; if that conflicts with a registry record, it fails rather than replacing the record. Once the GitHub release asset exists, retries restore that exact bundle instead of rebuilding. Every path verifies embedded checksums and fails if an existing registry version or GitHub release asset has different bytes. This preserves the ordering below while allowing safe recovery from transient failures:
 
 | Ecosystem | Publication sequence |
 | :-- | :-- |
@@ -150,12 +150,13 @@ If a registry reports a partial or conflicting version, stop and investigate the
 
 ## Maintaining these workflows
 
-Release workflow YAML is generated from `.github/release-tools/`; do not hand-edit the generated release files. After changing a helper or renderer, run:
+Release workflow YAML is generated from `.github/release-tools/`; do not hand-edit the generated release files. Install [actionlint](https://github.com/rhysd/actionlint) on your PATH (validated here with 1.7.12). After changing a helper or renderer, run:
 
 ```bash
+python3 .github/release-tools/render.py
 python3 .github/release-tools/render.py --check
 python3 .github/release-tools/test_release.py
-/tmp/actionlint .github/workflows/go-build.yml .github/workflows/go-release.yml \
+actionlint -shellcheck='' .github/workflows/go-build.yml .github/workflows/go-release.yml \
   .github/workflows/npm-build.yml .github/workflows/npm-release.yml \
   .github/workflows/rust-build.yml .github/workflows/rust-release.yml
 ```
