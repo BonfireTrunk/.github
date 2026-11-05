@@ -16,7 +16,7 @@ AUTH = "3268eb413133e2960fa4ae0e963ca76380c54cd9"
 def step_script(name, script, extra=""):
     source = (HERE / "common.py").read_text() + "\n" + (HERE / script).read_text()
     return (f"      - name: {name}\n" + extra + "        shell: bash\n        run: |\n"
-            + "          python3 - <<'PY'\n" + textwrap.indent(source, "          ") + "          PY\n")
+            + "          python3 -I - <<'PY'\n" + textwrap.indent(source, "          ") + "          PY\n")
 
 
 def render(kind):

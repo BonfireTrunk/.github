@@ -45,7 +45,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           """Shared source embedded by render.py into reusable workflows."""
           import base64
           import hashlib
@@ -275,7 +275,7 @@ jobs:
         if: steps.prepare.outputs.restored != 'true'
         shell: bash
         run: |
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           """Shared source embedded by render.py into reusable workflows."""
           import base64
           import hashlib
@@ -507,7 +507,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           """Shared source embedded by render.py into reusable workflows."""
           import base64
           import hashlib

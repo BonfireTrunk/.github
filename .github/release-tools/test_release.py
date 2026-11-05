@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import struct
+import textwrap
 import tempfile
 import types
 import unittest
@@ -34,6 +35,31 @@ def load_renderer():
 
 TOOLS = load_release_tools()
 RENDER = load_renderer()
+
+
+class PythonIsolationTest(unittest.TestCase):
+    def test_rendered_helper_ignores_checkout_modules_and_pythonpath(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trusted = root / "trusted"
+            checkout = root / "checkout"
+            trusted.mkdir()
+            checkout.mkdir()
+            (trusted / "common.py").write_text((TOOLS_DIRECTORY / "common.py").read_text())
+            (trusted / "probe.py").write_text('print("trusted imports only")\n')
+            for name in ("json.py", "sitecustomize.py"):
+                (checkout / name).write_text('raise RuntimeError("CHECKOUT_MODULE_EXECUTED")\n')
+            with patch.object(RENDER, "HERE", trusted):
+                step = RENDER.step_script("Probe", "probe.py")
+            script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+            result = TOOLS.subprocess.run(
+                ["bash", "-e"], input=script, cwd=checkout, text=True,
+                capture_output=True, timeout=10,
+                env={"PATH": os.environ["PATH"], "PYTHONPATH": str(checkout)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            self.assertEqual(result.stdout, "trusted imports only\n")
 
 
 class VersionTest(unittest.TestCase):

@@ -114,6 +114,14 @@ The workflows refuse layouts they cannot publish safely:
 
 The caller repository must be public. Protect its default branch and release tags so only reviewed changes can reach this workflow. The release job always names a GitHub environment: `release` by default, or the nonempty `release-environment` input. Create and configure that matching environment in every caller repository before publishing. GitHub can automatically create a missing environment without protection, so naming it alone is not an approval gate. Required reviewers and branch/tag restrictions are configured by the repository owner.
 
+## Untrusted pull requests
+
+Use the documented `pull_request` build trigger. Fork PR jobs receive a read-only GitHub token and no repository publishing secrets under GitHub's normal fork policy. These build workflows request neither write permissions nor OIDC credentials. Release jobs reject PR events and run package scripts separately from the job holding publishing credentials. Embedded Python helpers use isolated mode so checkout files and `PYTHONPATH` cannot replace their standard-library imports.
+
+Keep fork workflows restricted to read-only tokens without secrets. Do not execute PR head code from a privileged `pull_request_target` or `workflow_run` job, and do not pass inherited secrets to builds. Approving a fork's test run is not approval to merge or publish its code.
+
+Require review for changes to caller workflows, dependency locks, and build/package scripts. Configure the release environment's reviewers and permitted branches/tags before publishing; merely naming the environment adds no protection. Collaborators with write access and actions running in a publishing job remain trusted. SHA pins prevent silent action updates, but do not prove that the pinned code or a reviewed package is harmless. These workflow files do not audit or enforce the caller repository's GitHub settings.
+
 ## Registry setup
 
 ### npm
