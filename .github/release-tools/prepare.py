@@ -27,7 +27,7 @@ def prepare():
     require(existing is None or existing == sha, "Version tag already points at another commit")
     dest = Path(os.environ["RUNNER_TEMP"]) / "release-bundle"
     dest.mkdir()
-    release = github("/releases/tags/" + tag, missing=True)
+    release = published_release(tag)
     if release:
         require(existing == sha, "Existing release has no matching tag")
         assets = [a for a in release["assets"] if a["name"] == "release-" + kind + ".zip"]

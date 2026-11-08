@@ -43,10 +43,9 @@ def bundle():
     metadata = json.loads((dest / "metadata.json").read_text())
     kind = metadata["kind"]
     if kind == "npm":
-        packed = json.loads(Path(os.environ["RUNNER_TEMP"], "npm-pack.json").read_text())
-        require(len(packed) == 1, "Expected one npm package")
-        source = Path(packed[0]["filename"])
-        require(source.name == str(source) and source.suffix == ".tgz", "Invalid npm archive filename")
+        packed = list(Path(os.environ["RUNNER_TEMP"], "npm-pack").iterdir())
+        require(len(packed) == 1 and packed[0].suffix == ".tgz" and packed[0].is_file(), "Expected one npm package archive")
+        source = packed[0]
         shutil.copyfile(source, dest / "package.tgz")
         with tarfile.open(source, "r:gz") as tar:
             package = json.loads(tar.extractfile("package/package.json").read())

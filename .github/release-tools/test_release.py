@@ -352,13 +352,30 @@ class PublishTest(unittest.TestCase):
             TOOLS.npm_publish(self.npm_metadata(), "https://registry.npmjs.org")
         run.assert_not_called()
 
-    def test_npm_registry_rejects_a_conflicting_integrity(self):
+    def packument(self, integrity, tags=None):
+        return {"name": "@bonfiretrunk/example", "dist-tags": tags or {},
+                "versions": {"1.2.3": {"name": "@bonfiretrunk/example", "version": "1.2.3",
+                                       "dist": {"integrity": integrity}}}}
+
+    def test_npm_registry_reads_the_package_document_that_github_packages_serves(self):
         with tempfile.TemporaryDirectory() as temporary, contextlib.chdir(temporary):
             Path("package.tgz").write_bytes(b"expected npm archive")
-            response = {"name": "@bonfiretrunk/example", "version": "1.2.3",
-                        "dist": {"integrity": "sha512-different"}}
-            with patch.object(TOOLS, "request", return_value=response):
+            integrity = "sha512-" + TOOLS.base64.b64encode(TOOLS.hashlib.sha512(b"expected npm archive").digest()).decode()
+            with patch.object(TOOLS, "request", return_value=self.packument(integrity)) as request:
+                self.assertTrue(TOOLS.registry_matches(self.npm_metadata(), "https://npm.pkg.github.com", "token"))
+            request.assert_called_once_with("https://npm.pkg.github.com/%40bonfiretrunk%2Fexample", token="token", missing=True)
+            for document in (None, {"name": "@bonfiretrunk/example", "versions": {}}):
+                with self.subTest(document=document), patch.object(TOOLS, "request", return_value=document):
+                    self.assertFalse(TOOLS.registry_matches(self.npm_metadata(), "https://npm.pkg.github.com", "token"))
+
+    def test_npm_registry_rejects_a_conflicting_integrity_or_another_package(self):
+        with tempfile.TemporaryDirectory() as temporary, contextlib.chdir(temporary):
+            Path("package.tgz").write_bytes(b"expected npm archive")
+            with patch.object(TOOLS, "request", return_value=self.packument("sha512-different")):
                 with self.assertRaisesRegex(ValueError, "different bytes or no SHA-512 integrity"):
+                    TOOLS.registry_matches(self.npm_metadata(), "https://registry.npmjs.org")
+            with patch.object(TOOLS, "request", return_value={"name": "@bonfiretrunk/other", "versions": {}}):
+                with self.assertRaisesRegex(ValueError, "another package identity"):
                     TOOLS.registry_matches(self.npm_metadata(), "https://registry.npmjs.org")
 
     def test_npm_publish_rejects_newer_existing_channel_before_subprocess(self):
@@ -369,11 +386,11 @@ class PublishTest(unittest.TestCase):
         for metadata, channel, existing in cases:
             with self.subTest(channel=channel, existing=existing), \
                     patch.object(TOOLS, "registry_matches", return_value=False), \
-                    patch.object(TOOLS, "request", return_value={"version": existing}) as request, \
+                    patch.object(TOOLS, "request", return_value={"name": metadata["name"], "dist-tags": {channel: existing}}) as request, \
                     patch.object(TOOLS.subprocess, "run") as run:
                 with self.assertRaisesRegex(ValueError, "move npm " + channel + " backwards"):
                     TOOLS.npm_publish(metadata, "https://registry.npmjs.org")
-                self.assertIn("/" + channel, request.call_args.args[0])
+                self.assertEqual(request.call_args.args[0], "https://registry.npmjs.org/%40bonfiretrunk%2Fexample")
                 run.assert_not_called()
 
     def test_cargo_registry_accepts_exact_checksum_and_rejects_conflict_or_yank(self):
@@ -403,6 +420,14 @@ class PublishTest(unittest.TestCase):
             missing=True,
         )
 
+    def test_go_proxy_known_reads_only_the_version_list(self):
+        metadata = {"name": "github.com/BonfireTrunk/Example", "tag": "v1.2.3", "sha": "release-commit"}
+        for listing, known in ((b"v1.2.2\nv1.2.3\n", True), (b"v1.2.30\n", False), (b"", False), (None, False)):
+            with self.subTest(listing=listing), patch.object(TOOLS, "request", return_value=listing) as request:
+                self.assertEqual(TOOLS.go_proxy_known(metadata), known)
+            request.assert_called_once_with(
+                "https://proxy.golang.org/github.com/!bonfire!trunk/!example/@v/list", missing=True, raw=True)
+
     def test_go_proxy_info_allows_missing_but_rejects_another_version_or_origin(self):
         metadata = {"name": "github.com/BonfireTrunk/Example", "tag": "v1.2.3", "sha": "release-commit"}
         with patch.object(TOOLS, "request", return_value=None):
@@ -416,29 +441,134 @@ class PublishTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     TOOLS.go_proxy_info(metadata)
 
-    def test_ensure_github_release_repairs_missing_release_for_existing_tag(self):
-        metadata = {"tag": "v1.2.3", "sha": "release-commit", "version": "1.2.3"}
+    def release_fixture(self, temporary):
+        archive = Path(temporary) / "release-npm.zip"
+        archive.write_bytes(b"release bundle")
+        Path(temporary, "notes.md").write_text("- Release\n")
+        return {"tag": "v1.2.3", "sha": "release-commit", "version": "1.2.3"}, archive
+
+    def run_ensure_release(self, temporary, archive, metadata, github, uploaded=None):
+        environment = {"GITHUB_REPOSITORY": "BonfireTrunk/example", "GH_TOKEN": "token"}
+        with patch.dict(os.environ, environment, clear=True), contextlib.chdir(temporary), \
+                patch.object(TOOLS, "tag_commit", return_value="release-commit"), \
+                patch.object(TOOLS, "github", github), \
+                patch.object(TOOLS, "request", return_value=uploaded or {"digest": "sha256:" + TOOLS.digest(archive)}) as request:
+            TOOLS.ensure_github_release(metadata, archive)
+        return request
+
+    def draft(self, assets=()):
+        return {"id": 7, "draft": True, "prerelease": False, "tag_name": "v1.2.3", "assets": list(assets),
+                "upload_url": "https://uploads.github.com/repos/BonfireTrunk/example/releases/7/assets{?name,label}"}
+
+    def test_ensure_github_release_attaches_the_bundle_to_a_draft_before_publishing(self):
         with tempfile.TemporaryDirectory() as temporary:
-            archive = Path(temporary) / "release-npm.zip"
-            notes = Path(temporary) / "notes.md"
-            archive.write_bytes(b"release bundle")
-            notes.write_text("- Release\n")
-            environment = {"GITHUB_REPOSITORY": "BonfireTrunk/example"}
-            release = {"draft": False, "prerelease": False, "assets": []}
-            github = Mock(side_effect=[None, release])
-            with patch.dict(os.environ, environment, clear=True), contextlib.chdir(temporary), \
-                    patch.object(TOOLS, "tag_commit", return_value="release-commit"), \
-                    patch.object(TOOLS, "github", github), \
-                    patch.object(TOOLS.subprocess, "run") as run:
-                TOOLS.ensure_github_release(metadata, archive)
+            metadata, archive = self.release_fixture(temporary)
+            github = Mock(side_effect=[None, [], self.draft(), None])
+            request = self.run_ensure_release(temporary, archive, metadata, github)
             self.assertEqual(github.call_args_list[0].args, ("/releases/tags/v1.2.3",))
-            self.assertEqual(github.call_args_list[1].args, ("/releases",))
-            self.assertEqual(github.call_args_list[1].kwargs["method"], "POST")
-            self.assertEqual(github.call_args_list[1].kwargs["data"]["target_commitish"], "release-commit")
-            run.assert_called_once_with(
-                ["gh", "release", "upload", "v1.2.3", str(archive), "--repo", "BonfireTrunk/example"],
-                check=True,
-            )
+            self.assertEqual(github.call_args_list[2].args, ("/releases",))
+            self.assertTrue(github.call_args_list[2].kwargs["data"]["draft"])
+            self.assertEqual(github.call_args_list[2].kwargs["data"]["target_commitish"], "release-commit")
+            self.assertEqual(request.call_args.args[0],
+                             "https://uploads.github.com/repos/BonfireTrunk/example/releases/7/assets?name=release-npm.zip")
+            self.assertEqual(request.call_args.kwargs["data"], b"release bundle")
+            self.assertEqual(github.call_args_list[3].args, ("/releases/7",))
+            self.assertEqual(github.call_args_list[3].kwargs["data"], {"draft": False, "make_latest": "legacy"})
+
+    def test_ensure_github_release_replaces_a_draft_bundle_left_by_an_interrupted_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            metadata, archive = self.release_fixture(temporary)
+            stale = {"id": 11, "name": "release-npm.zip", "digest": "sha256:" + "0" * 64}
+            github = Mock(side_effect=[None, [self.draft([stale])], None, None])
+            request = self.run_ensure_release(temporary, archive, metadata, github)
+            self.assertEqual(github.call_args_list[2].args, ("/releases/assets/11",))
+            self.assertEqual(github.call_args_list[2].kwargs["method"], "DELETE")
+            request.assert_called_once()
+            self.assertEqual(github.call_args_list[3].kwargs["data"]["draft"], False)
+
+    def test_ensure_github_release_never_replaces_a_published_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            metadata, archive = self.release_fixture(temporary)
+            published = dict(self.draft([{"id": 11, "name": "release-npm.zip", "digest": "sha256:" + "0" * 64}]), draft=False)
+            github = Mock(side_effect=[published])
+            with self.assertRaisesRegex(ValueError, "refusing to replace it"):
+                self.run_ensure_release(temporary, archive, metadata, github)
+            github.assert_called_once()
+
+    def test_ensure_github_release_leaves_a_complete_published_release_alone(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            metadata, archive = self.release_fixture(temporary)
+            asset = {"id": 11, "name": "release-npm.zip", "digest": "sha256:" + TOOLS.digest(archive)}
+            github = Mock(side_effect=[dict(self.draft([asset]), draft=False)])
+            request = self.run_ensure_release(temporary, archive, metadata, github)
+            github.assert_called_once()
+            request.assert_not_called()
+
+
+class RequestTest(unittest.TestCase):
+    def http_error(self, body):
+        return TOOLS.urllib.error.HTTPError("https://crates.io/api/v1/crates/new", 400, "Bad Request", {}, io.BytesIO(body))
+
+    def test_reports_registry_error_detail_only_when_asked(self):
+        error = self.http_error(json.dumps({"errors": [{"detail": "missing license metadata"}]}).encode())
+        with patch.object(TOOLS.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 400: missing license metadata;"):
+                TOOLS.request("https://crates.io/api/v1/crates/new", method="PUT", data=b"x", detail=True)
+        error = self.http_error(json.dumps({"errors": [{"detail": "missing license metadata"}]}).encode())
+        with patch.object(TOOLS.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, r"HTTP 400; check access"):
+                TOOLS.request("https://crates.io/api/v1/crates/new", method="PUT", data=b"x")
+
+    def test_tolerates_an_error_body_that_is_not_json(self):
+        with patch.object(TOOLS.urllib.request, "urlopen", side_effect=self.http_error(b"<html>")):
+            with self.assertRaisesRegex(RuntimeError, r"HTTP 400; check access"):
+                TOOLS.request("https://crates.io/api/v1/crates/new", method="PUT", data=b"x", detail=True)
+
+
+class NpmBundleTest(unittest.TestCase):
+    def test_bundles_the_single_archive_from_the_pack_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp = Path(temporary)
+            (temp / "release-bundle").mkdir()
+            (temp / "npm-pack").mkdir()
+            content = io.BytesIO()
+            manifest = json.dumps({"name": "@bonfiretrunk/example", "version": "1.2.3",
+                                   "repository": "https://github.com/BonfireTrunk/example"}).encode()
+            with TOOLS.tarfile.open(fileobj=content, mode="w:gz") as tar:
+                entry = TOOLS.tarfile.TarInfo("package/package.json")
+                entry.size = len(manifest)
+                tar.addfile(entry, io.BytesIO(manifest))
+            (temp / "npm-pack" / "bonfiretrunk-example-1.2.3.tgz").write_bytes(content.getvalue())
+            (temp / "release-bundle" / "notes.md").write_text("- Release\n")
+            TOOLS.write_json(temp / "release-bundle" / "metadata.json", {
+                "kind": "npm", "sha": "release-commit", "version": "1.2.3", "tag": "v1.2.3", "name": "@bonfiretrunk/example"})
+            environment = {"RUNNER_TEMP": temporary, "GITHUB_REPOSITORY": "BonfireTrunk/example"}
+            with patch.dict(os.environ, environment, clear=True):
+                TOOLS.bundle()
+            self.assertEqual((temp / "release-bundle" / "package.tgz").read_bytes(), content.getvalue())
+            self.assertTrue((temp / "release-npm.zip").is_file())
+            (temp / "npm-pack" / "second-1.2.3.tgz").write_bytes(b"x")
+            with patch.dict(os.environ, environment, clear=True):
+                with self.assertRaisesRegex(ValueError, "Expected one npm package archive"):
+                    TOOLS.bundle()
+
+
+class ConcurrencyRenderTest(unittest.TestCase):
+    def test_only_release_events_share_the_repository_release_queue(self):
+        for kind in ("go", "npm", "rust"):
+            with self.subTest(kind=kind):
+                workflow = RENDER.render(kind)
+                group = workflow.split("concurrency:\n  group: >-\n", 1)[1].split("  cancel-in-progress", 1)[0]
+                self.assertIn(RENDER.RELEASE_EVENT, group)
+                self.assertIn("format('package-release-skip-{0}', github.run_id)", group)
+                self.assertIn("    if: >-\n      " + RENDER.RELEASE_EVENT + "\n", workflow)
+
+    def test_rust_build_and_release_share_toolchain_validation_and_packaging(self):
+        step = RENDER.RUST_STEP.format(condition="")
+        self.assertIn(step, RENDER.render_rust_build())
+        self.assertIn("cargo \"+$TOOLCHAIN\" package --locked", step)
+        release = RENDER.render("rust")
+        self.assertIn(RENDER.RUST_STEP.format(condition="        if: steps.prepare.outputs.restored != 'true'\n"), release)
 
 
 if __name__ == "__main__":

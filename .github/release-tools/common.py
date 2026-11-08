@@ -57,7 +57,7 @@ def run(*args, **kwargs):
     return subprocess.check_output(args, text=True, **kwargs).strip()
 
 
-def request(url, token=None, method="GET", data=None, missing=False, content_type="application/json"):
+def request(url, token=None, method="GET", data=None, missing=False, content_type="application/json", raw=False, detail=False):
     headers = {"Accept": "application/json", "User-Agent": "BonfireTrunk-release-workflows"}
     if token:
         headers["Authorization"] = "Bearer " + token
@@ -68,12 +68,20 @@ def request(url, token=None, method="GET", data=None, missing=False, content_typ
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
-            raw = response.read()
-            return json.loads(raw) if raw else None
+            body = response.read()
+            return body if raw else json.loads(body) if body else None
     except urllib.error.HTTPError as error:
         if missing and error.code == 404:
             return None
-        raise RuntimeError(f"{method} {urllib.parse.urlsplit(url).hostname} returned HTTP {error.code}; check access and service status") from None
+        reason = ""
+        if detail:
+            # Only for registries whose error bodies carry validation messages, never credentials.
+            try:
+                errors = json.loads(error.read()).get("errors", [])
+                reason = ": " + "; ".join(str(e.get("detail", "")) for e in errors)[:500]
+            except (ValueError, AttributeError):
+                pass
+        raise RuntimeError(f"{method} {urllib.parse.urlsplit(url).hostname} returned HTTP {error.code}{reason}; check access and service status") from None
 
 
 def github(path, **kwargs):
@@ -92,6 +100,11 @@ def tag_commit(tag):
         require(obj["type"] == "tag", "Release tag does not identify a commit")
         obj = github("/git/tags/" + obj["sha"])["object"]
     raise ValueError("Too many nested annotated tags")
+
+
+def published_release(tag):
+    """Published releases by tag; drafts are only listed to tokens with write access."""
+    return github("/releases/tags/" + urllib.parse.quote(tag, safe=""), missing=True)
 
 
 def digest(path):
