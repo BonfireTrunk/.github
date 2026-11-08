@@ -393,6 +393,34 @@ class PublishTest(unittest.TestCase):
                 self.assertEqual(request.call_args.args[0], "https://registry.npmjs.org/%40bonfiretrunk%2Fexample")
                 run.assert_not_called()
 
+    def test_npm_publish_waits_briefly_after_a_rejected_publish(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.dict(os.environ, {"RUNNER_TEMP": temporary}, clear=True), \
+                patch.object(TOOLS, "registry_matches", return_value=False) as matches, \
+                patch.object(TOOLS, "check_npm_channel"), \
+                patch.object(TOOLS.time, "sleep"), \
+                patch.object(TOOLS.subprocess, "run", return_value=Mock(returncode=1)):
+            with self.assertRaisesRegex(RuntimeError, "npm publish exit 1"):
+                TOOLS.npm_publish(self.npm_metadata(), "https://registry.npmjs.org")
+        self.assertEqual(matches.call_count, 1 + 3)
+
+    def test_cargo_publish_reports_a_rejection_after_a_short_index_check(self):
+        metadata = {"name": "example-crate", "version": "1.2.3"}
+        rejection = RuntimeError("PUT crates.io returned HTTP 400: missing license; check access and service status")
+        rejection.status = 400
+        with tempfile.TemporaryDirectory() as temporary, contextlib.chdir(temporary), \
+                patch.dict(os.environ, {"CARGO_REGISTRY_TOKEN": "token"}, clear=True), \
+                patch.object(TOOLS, "cargo_matches", return_value=False) as matches, \
+                patch.object(TOOLS, "request", side_effect=rejection), \
+                patch.object(TOOLS.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
+            crate = b"crate bytes"
+            info = json.dumps({"name": "example-crate", "vers": "1.2.3"}).encode()
+            Path("package.crate").write_bytes(crate)
+            Path("upload.bin").write_bytes(struct.pack("<I", len(info)) + info + struct.pack("<I", len(crate)) + crate)
+            with self.assertRaisesRegex(RuntimeError, "missing license"):
+                TOOLS.cargo_publish(metadata)
+        self.assertEqual(matches.call_count, 1 + 2)
+
     def test_cargo_registry_accepts_exact_checksum_and_rejects_conflict_or_yank(self):
         metadata = {"name": "example-crate", "version": "1.2.3"}
         with tempfile.TemporaryDirectory() as temporary, contextlib.chdir(temporary):
@@ -561,6 +589,7 @@ class ConcurrencyRenderTest(unittest.TestCase):
                 group = workflow.split("concurrency:\n  group: >-\n", 1)[1].split("  cancel-in-progress", 1)[0]
                 self.assertIn(RENDER.RELEASE_EVENT, group)
                 self.assertIn("format('package-release-skip-{0}', github.run_id)", group)
+                self.assertIn("  cancel-in-progress: false\n  queue: max\n", workflow)
                 self.assertIn("    if: >-\n      " + RENDER.RELEASE_EVENT + "\n", workflow)
 
     def test_rust_build_and_release_share_toolchain_validation_and_packaging(self):

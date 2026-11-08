@@ -46,10 +46,12 @@ def npm_publish(metadata, registry, token=None):
                              "--access", "public", "--tag", channel], env=env)
     # A lost response may follow an accepted upload. Reconcile before any retry;
     # npmjs.com lets its CDN serve a package document for up to five minutes.
-    for attempt in range(24):
+    # A failed publish is almost always a real rejection, so report it sooner.
+    attempts = 24 if result.returncode == 0 else 3
+    for attempt in range(attempts):
         if registry_matches(metadata, registry, token):
             return
-        if attempt < 23:
+        if attempt < attempts - 1:
             time.sleep(15)
     raise RuntimeError(f"npm publish exit {result.returncode}; version not confirmed. Rerun this job after checking registry status.")
 
@@ -114,6 +116,7 @@ def cargo_publish(metadata):
     require(info["name"] == metadata["name"] and info["vers"] == metadata["version"], "Cargo upload metadata mismatch")
     require(payload[8 + length:] == Path("package.crate").read_bytes() and crate_length == len(payload[8 + length:]), "Cargo upload does not contain the verified crate")
     error = None
+    attempts = 12
     try:
         result = request("https://crates.io/api/v1/crates/new", token=os.environ["CARGO_REGISTRY_TOKEN"],
                          method="PUT", data=payload, content_type="application/octet-stream", detail=True)
@@ -121,12 +124,15 @@ def cargo_publish(metadata):
     except RuntimeError as exc:
         error = str(exc)
         print(error)
+        if 400 <= getattr(exc, "status", 0) < 500:
+            # crates.io rejected the request; a short check still catches an earlier accepted upload.
+            attempts = 2
     except (urllib.error.URLError, TimeoutError) as exc:
         error = type(exc).__name__
-    for attempt in range(12):
+    for attempt in range(attempts):
         if cargo_matches(metadata):
             return
-        if attempt < 11:
+        if attempt < attempts - 1:
             time.sleep(10)
     raise RuntimeError("Crate upload not confirmed in index" + (" after " + error if error else "") + "; inspect crates.io and rerun this job")
 
@@ -136,7 +142,7 @@ def go_proxy_url(metadata, path):
 
 
 def go_proxy_known(metadata):
-    # Asking for an untagged version makes the proxy hide that version for up to 30 minutes; the list does not.
+    # The proxy documents that requesting a version before its tag exists can delay it by up to 30 minutes.
     listing = request(go_proxy_url(metadata, "list"), missing=True, raw=True)
     return listing is not None and metadata["tag"] in listing.decode().split()
 

@@ -81,7 +81,9 @@ def request(url, token=None, method="GET", data=None, missing=False, content_typ
                 reason = ": " + "; ".join(str(e.get("detail", "")) for e in errors)[:500]
             except (ValueError, AttributeError):
                 pass
-        raise RuntimeError(f"{method} {urllib.parse.urlsplit(url).hostname} returned HTTP {error.code}{reason}; check access and service status") from None
+        failure = RuntimeError(f"{method} {urllib.parse.urlsplit(url).hostname} returned HTTP {error.code}{reason}; check access and service status")
+        failure.status = error.code
+        raise failure from None
 
 
 def github(path, **kwargs):

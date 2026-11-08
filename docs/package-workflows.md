@@ -74,7 +74,7 @@ For Rust, use `rust-release.yml` and add `id-token: write`:
       release-environment: release # default; replace only with another existing environment
 ```
 
-Do not add a caller-level `concurrency` group. The shared workflow queues release runs per repository and keeps every other push out of that queue. GitHub keeps only one waiting run per group, so a caller group shared by all pushes would let an ordinary branch push cancel a queued release.
+Do not add a caller-level `concurrency` group. The shared workflow queues release runs per repository, in order, and keeps every other push out of that queue. A caller group shared by all pushes would make ordinary branch pushes wait behind a release that is waiting for approval, and by default GitHub cancels all but one waiting run in a group.
 
 Do not add `secrets: inherit`. These workflows are designed to use GitHub's short-lived workflow token and OIDC, not registry write tokens stored in caller repositories.
 
@@ -106,11 +106,11 @@ The workflows refuse layouts they cannot publish safely:
 
 | Ecosystem | Required layout and identity |
 | :-- | :-- |
-| Go | One root `go.mod`, no `go.work`. Its module must be `github.com/<owner>/<repository>` for v0/v1, or the same path ending `/vN` for v2 and later. |
+| Go | One root `go.mod`, no `go.work`. Its module must be `github.com/<owner>/<repository>` for v0/v1, or the same path ending `/vN` for v2 and later, with the owner and repository spelled in the same case as on GitHub (for example `github.com/BonfireTrunk/example`). |
 | npm | One root public `package.json`, no `workspaces`, and a committed `package-lock.json`. The package is scoped as `@<lowercase-github-owner>/<name>`, and both root version fields in the lockfile equal the manifest version. Its `repository` is exactly `https://github.com/<owner>/<repository>`, optionally with `.git` or `git+https://...git`; `publishConfig` is absent or exactly `{ "access": "public" }`. |
 | Rust | One root `Cargo.toml` with `[package]`, no workspace, and a committed `Cargo.lock`. The manifest permits `crates-io` publishing. Packaged dependencies must resolve from crates.io. Cargo artifact dependencies are unsupported. |
 
-The caller repository must be public. Protect its default branch and release tags so only reviewed changes can reach this workflow. The release job always names a GitHub environment: `release` by default, or the nonempty `release-environment` input. Create and configure that matching environment in every caller repository before publishing. GitHub can automatically create a missing environment without protection, so naming it alone is not an approval gate. Required reviewers and branch/tag restrictions are configured by the repository owner.
+The caller repository must be public. Protect its default branch and release tags so only reviewed changes can reach this workflow. The workflow creates the `v*` tag itself with the workflow token, so a tag ruleset should block updating and deleting `v*` tags but not creating them, unless the ruleset lets the workflow bypass it. Enabling GitHub's immutable releases also locks each release tag once the workflow publishes the release. The release job always names a GitHub environment: `release` by default, or the nonempty `release-environment` input. Create and configure that matching environment in every caller repository before publishing. GitHub can automatically create a missing environment without protection, so naming it alone is not an approval gate. Required reviewers and branch/tag restrictions are configured by the repository owner.
 
 ## Untrusted pull requests
 
@@ -126,19 +126,21 @@ Require review for changes to caller workflows, dependency locks, and build/pack
 
 Configure the npm package as a public package and configure a GitHub Actions trusted publisher in npmjs.com. npm's current documentation requires a GitHub-hosted runner, `id-token: write`, Node at least 22.14.0, and npm at least 11.5.1. The release workflow uses Node 24 and npm 12.2.2.
 
+npm adds trusted publishers from an existing package's settings page, so the first version of a new package needs a one-time manual publish. Create the npm organization for the scope first; for `BonfireTrunk` that is `bonfiretrunk`. Let the release workflow run: it publishes to GitHub Packages and creates the GitHub release, then fails at npmjs.com. Download `release-npm.zip` from that GitHub release, unzip it, and run `npm publish package.tgz --access public` with your own npm login, adding `--tag next` for a prerelease. Then configure the trusted publisher and rerun the release workflow; it confirms that npmjs.com holds the same bytes and finishes. Publishing anything other than that exact `package.tgz` under the release version makes the workflow refuse the version.
+
 Configure the trusted publisher with the caller repository owner and repository, caller workflow filename `release.yml`, and the exact environment name selected above. npm documents that when `workflow_call` invokes a workflow containing `npm publish`, validation checks the calling workflow's name. Configure `release.yml`, not `npm-release.yml`, before the first automated release. Enable direct `npm publish`; the workflow does not use `npm dist-tag` after publishing.
 
 The release build runs `npm ci`, its configured build script, and tests, then runs `npm pack --ignore-scripts`. The build script must place every distributable generated file in the package before that command. The same tarball is first published to GitHub Packages, then the tag and GitHub release are created, then it is published to npmjs.com with OIDC. The workflow verifies the bytes of an already-published version rather than overwriting it. GitHub Packages needs `packages: write`; npmjs.com needs no stored write token.
 
 ### Rust
 
-Publish the initial crate manually with an API token, then configure its trusted publisher in crates.io for the caller GitHub repository, workflow filename `release.yml`, and the same environment name selected above. crates.io's official setup requires the crate to already exist and its GitHub action exchanges an OIDC token for a temporary publishing token. The workflow uses that temporary token, so callers supply `id-token: write` and no `CARGO_REGISTRY_TOKEN` secret.
+Publish the initial crate manually with an API token, then configure its trusted publisher in crates.io for the caller GitHub repository, workflow filename `release.yml`, and the same environment name selected above. crates.io's official setup requires the crate to already exist and its GitHub action exchanges an OIDC token for a temporary publishing token. The workflow uses that temporary token, so callers supply `id-token: write` and no `CARGO_REGISTRY_TOKEN` secret. Give the manual publish a version the workflow will never release, or release that whole first version by hand and let the workflow start with the next one: a crate built on another machine almost never has identical bytes, and the workflow refuses an existing version whose bytes differ. Delete the API token once the first automated release succeeds.
 
 The release build validates and packages the crate once. The workflow saves that verified `.crate` file in the GitHub release bundle, creates the tag and GitHub release, then uploads those exact bytes with Cargo's documented registry wire format. It checks the registry index checksum before treating a version as complete.
 
 ### Go
 
-Go modules have no GitHub Packages publishing step. A semantic Git tag and public repository are the publication mechanism. After creating the tag and GitHub release, the workflow repeatedly asks `proxy.golang.org` for the module using only that proxy and the public checksum database. It reports success only when the proxy returns the expected tag, checksums, and an `Origin.Hash` equal to the release commit. Before tagging, the workflow checks only the proxy's version list, because requesting a version that has no tag yet can hide it from the proxy for up to 30 minutes. The Go proxy can still take time to observe a new tag; retry the release workflow rather than moving the tag.
+Go modules have no GitHub Packages publishing step. A semantic Git tag and public repository are the publication mechanism. After creating the tag and GitHub release, the workflow repeatedly asks `proxy.golang.org` for the module using only that proxy and the public checksum database. It reports success only when the proxy returns the expected tag, checksums, and an `Origin.Hash` equal to the release commit. Before tagging, the workflow reads only the proxy's version list and never requests the untagged version itself, because the Go proxy documents that requesting a version before its tag exists can delay that version by up to 30 minutes. The Go proxy can still take time to observe a new tag; retry the release workflow rather than moving the tag.
 
 ## Retries and immutable artifacts
 
@@ -154,19 +156,20 @@ Rerunning only the failed publish job uses its original artifact ID. A new dispa
 | Rust | Test/package one crate, Git tag and release with bundle, crates.io |
 | Go | Test/vet, Git tag and release, verified `proxy.golang.org` availability |
 
-GitHub keeps one running and one waiting release run per repository. If a third release is merged while one runs and another waits, GitHub cancels the waiting run; rerun that cancelled run once the queue clears.
+Release runs for one repository run one at a time, in order; up to 100 can wait. A queued release is not cancelled by a later one.
 
 If a registry reports a partial or conflicting version, stop and investigate the registry record. Never delete or retag a published version merely to make a retry pass.
 
 ## Maintaining these workflows
 
-Release workflow YAML and `rust-build.yml` are generated from `.github/release-tools/`; do not hand-edit the generated files. Install [actionlint](https://github.com/rhysd/actionlint) on your PATH (validated here with 1.7.12). After changing a helper or renderer, run:
+Release workflow YAML and `rust-build.yml` are generated from `.github/release-tools/`; do not hand-edit the generated files. Install [actionlint](https://github.com/rhysd/actionlint) on your PATH (validated here with 1.7.12). actionlint 1.7.12 does not yet know GitHub's documented `concurrency.queue` key ([rhysd/actionlint#657](https://github.com/rhysd/actionlint/issues/657)), so the command ignores exactly that message. After changing a helper or renderer, run:
 
 ```bash
 python3 .github/release-tools/render.py
 python3 .github/release-tools/render.py --check
 python3 .github/release-tools/test_release.py
-actionlint -shellcheck='' .github/workflows/go-build.yml .github/workflows/go-release.yml \
+actionlint -shellcheck='' -ignore 'unexpected key "queue" for "concurrency" section' \
+  .github/workflows/go-build.yml .github/workflows/go-release.yml \
   .github/workflows/npm-build.yml .github/workflows/npm-release.yml \
   .github/workflows/rust-build.yml .github/workflows/rust-release.yml
 ```

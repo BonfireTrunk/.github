@@ -13,8 +13,8 @@ DOWNLOAD = "9000827ccba6bdab643e8b6fd33ac0654aef8333"
 AUTH = "3268eb413133e2960fa4ae0e963ca76380c54cd9"
 NPM = "12.2.2"
 
-# Pushes that are not releases must not join the release concurrency group: GitHub
-# keeps one pending run per group, so they would cancel a queued release.
+# Pushes that are not releases stay out of the release concurrency group so they
+# never wait behind a release that is waiting for environment approval.
 RELEASE_EVENT = """(github.event_name == 'push' &&
        github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
        startsWith(github.event.head_commit.message, 'Release ')) ||
@@ -76,6 +76,7 @@ concurrency:
       && format('package-release-{{0}}', github.repository)
       || format('package-release-skip-{{0}}', github.run_id) }}}}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   build:
