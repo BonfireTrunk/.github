@@ -1,0 +1,41 @@
+name: npm-build
+
+# Reusable build for one-root-package npm libraries. It intentionally exposes no
+# secrets and uses a read-only token so pull-request code cannot publish.
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version used to build and test
+        type: string
+        default: '24'
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          package-manager-cache: false
+
+      - name: Require npm lockfile
+        run: test -f package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build --if-present
+
+      - name: Test
+        run: npm test

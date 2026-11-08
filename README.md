@@ -15,6 +15,12 @@ Organization-wide defaults for [BonfireTrunk](https://github.com/BonfireTrunk) r
 | [`.github/workflows/cla.yml`](.github/workflows/cla.yml) | Runs the agreement check on this repository's own pull requests |
 | [`.github/workflows/maven-build.yml`](.github/workflows/maven-build.yml) | Reusable workflow that builds and tests a Maven library on pull requests, using GitHub Packages for organization artifacts Maven Central lacks |
 | [`.github/workflows/maven-release.yml`](.github/workflows/maven-release.yml) | Reusable workflow that publishes a Maven library to GitHub Packages, tags it with a GitHub release, then publishes it to Maven Central, and publishes a snapshot to GitHub Packages when a merge asks for one |
+| [`.github/workflows/go-build.yml`](.github/workflows/go-build.yml) | Reusable pull-request build and verification for one root Go module |
+| [`.github/workflows/go-release.yml`](.github/workflows/go-release.yml) | Reusable Go module release: test, vet, tag and GitHub release, then proxy availability verification |
+| [`.github/workflows/npm-build.yml`](.github/workflows/npm-build.yml) | Reusable pull-request build and test for one root npm package |
+| [`.github/workflows/npm-release.yml`](.github/workflows/npm-release.yml) | Reusable npm release: build one tarball, publish it to GitHub Packages, create the GitHub release, then publish the same tarball to npm with OIDC |
+| [`.github/workflows/rust-build.yml`](.github/workflows/rust-build.yml) | Reusable pull-request test for one root Rust crate |
+| [`.github/workflows/rust-release.yml`](.github/workflows/rust-release.yml) | Reusable Rust release: test and package one crate, create the GitHub release, then publish its verified bytes to crates.io with OIDC |
 
 ## Using the shared workflows
 
@@ -96,3 +102,7 @@ A pull request whose title starts with `Snapshot:` (for example `Snapshot: Add a
 A release resolves from Maven Central alone and fails early if it depends on a SNAPSHOT, so a published library never depends on something its users cannot download. Before releasing a library that was built against another library's snapshot, release that library and switch to its release version.
 
 To use snapshots locally, add a `github` server with a personal access token (classic) that has `read:packages`, and the `https://maven.pkg.github.com/BonfireTrunk/*` repository, to `~/.m2/settings.xml`.
+
+## Go, npm and Rust packages
+
+The non-Maven workflows have a separate, intentionally strict release contract for one public root package, crate, or module. They never receive inherited secrets. Their build jobs use a read-only token; a separate release job receives only the narrow permissions it needs. See [package workflow setup](docs/package-workflows.md) for the caller files, release format, OIDC registry setup, retry behavior, and the project-layout limits.
