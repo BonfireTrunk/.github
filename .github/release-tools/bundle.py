@@ -59,6 +59,9 @@ def bundle():
         shutil.copyfile(archive, dest / "package.crate")
         (dest / "upload.bin").write_bytes(payload)
     metadata["files"] = {p.name: digest(p) for p in dest.iterdir() if p.name != "metadata.json"}
+    if os.environ.get("RELEASE_ASSETS") == "true":
+        # Only digests are sealed; the files travel beside the bundle so the release does not store them twice.
+        metadata["assets"] = asset_files(Path(os.environ["RUNNER_TEMP"]) / "release-assets", kind)
     write_json(dest / "metadata.json", metadata)
     check_bundle(dest, kind, metadata["sha"], metadata["version"])
     archive = dest.parent / ("release-" + kind + ".zip")

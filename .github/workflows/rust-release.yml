@@ -184,6 +184,23 @@ jobs:
                       stream.write(f"{key}={value}\n")
 
 
+          def check_asset_names(names, kind):
+              for name in names:
+                  # GitHub renames asset files with other characters, which would break download links.
+                  require(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", name) and name.lower() != "release-" + kind + ".zip",
+                          "Release asset names use letters, digits, '.', '_' and '-', start and end with a letter or digit, and cannot be release-" + kind + ".zip: " + name)
+              require(len({name.lower() for name in names}) == len(names), "Release asset names must differ in more than letter case")
+
+
+          def asset_files(directory, kind):
+              paths = sorted(Path(directory).iterdir())
+              require(paths, "assets-command left no files in RELEASE_ASSETS_DIR")
+              for path in paths:
+                  require(path.is_file() and not path.is_symlink(), "Release assets must be regular files directly in RELEASE_ASSETS_DIR: " + path.name)
+              check_asset_names([path.name for path in paths], kind)
+              return {path.name: digest(path) for path in paths}
+
+
           def check_bundle(directory, kind, sha, expected_version=None):
               metadata = json.loads((directory / "metadata.json").read_text())
               require(metadata["kind"] == kind and metadata["sha"] == sha, "Artifact belongs to another release commit or ecosystem")
@@ -197,6 +214,7 @@ jobs:
                   require(digest(directory / name) == sha256, "Release artifact checksum mismatch: " + name)
               expected = {"notes.md"} | ({"package.tgz"} if kind == "npm" else {"package.crate", "upload.bin"} if kind == "rust" else set())
               require(set(metadata["files"]) == expected, "Incomplete release bundle")
+              check_asset_names(list(metadata.get("assets", {})), kind)
               return metadata
 
           def changelog_notes(text, release_version):
@@ -428,6 +446,23 @@ jobs:
                       stream.write(f"{key}={value}\n")
 
 
+          def check_asset_names(names, kind):
+              for name in names:
+                  # GitHub renames asset files with other characters, which would break download links.
+                  require(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", name) and name.lower() != "release-" + kind + ".zip",
+                          "Release asset names use letters, digits, '.', '_' and '-', start and end with a letter or digit, and cannot be release-" + kind + ".zip: " + name)
+              require(len({name.lower() for name in names}) == len(names), "Release asset names must differ in more than letter case")
+
+
+          def asset_files(directory, kind):
+              paths = sorted(Path(directory).iterdir())
+              require(paths, "assets-command left no files in RELEASE_ASSETS_DIR")
+              for path in paths:
+                  require(path.is_file() and not path.is_symlink(), "Release assets must be regular files directly in RELEASE_ASSETS_DIR: " + path.name)
+              check_asset_names([path.name for path in paths], kind)
+              return {path.name: digest(path) for path in paths}
+
+
           def check_bundle(directory, kind, sha, expected_version=None):
               metadata = json.loads((directory / "metadata.json").read_text())
               require(metadata["kind"] == kind and metadata["sha"] == sha, "Artifact belongs to another release commit or ecosystem")
@@ -441,6 +476,7 @@ jobs:
                   require(digest(directory / name) == sha256, "Release artifact checksum mismatch: " + name)
               expected = {"notes.md"} | ({"package.tgz"} if kind == "npm" else {"package.crate", "upload.bin"} if kind == "rust" else set())
               require(set(metadata["files"]) == expected, "Incomplete release bundle")
+              check_asset_names(list(metadata.get("assets", {})), kind)
               return metadata
 
           import shutil
@@ -504,6 +540,9 @@ jobs:
                   shutil.copyfile(archive, dest / "package.crate")
                   (dest / "upload.bin").write_bytes(payload)
               metadata["files"] = {p.name: digest(p) for p in dest.iterdir() if p.name != "metadata.json"}
+              if os.environ.get("RELEASE_ASSETS") == "true":
+                  # Only digests are sealed; the files travel beside the bundle so the release does not store them twice.
+                  metadata["assets"] = asset_files(Path(os.environ["RUNNER_TEMP"]) / "release-assets", kind)
               write_json(dest / "metadata.json", metadata)
               check_bundle(dest, kind, metadata["sha"], metadata["version"])
               archive = dest.parent / ("release-" + kind + ".zip")
@@ -674,6 +713,23 @@ jobs:
                       stream.write(f"{key}={value}\n")
 
 
+          def check_asset_names(names, kind):
+              for name in names:
+                  # GitHub renames asset files with other characters, which would break download links.
+                  require(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", name) and name.lower() != "release-" + kind + ".zip",
+                          "Release asset names use letters, digits, '.', '_' and '-', start and end with a letter or digit, and cannot be release-" + kind + ".zip: " + name)
+              require(len({name.lower() for name in names}) == len(names), "Release asset names must differ in more than letter case")
+
+
+          def asset_files(directory, kind):
+              paths = sorted(Path(directory).iterdir())
+              require(paths, "assets-command left no files in RELEASE_ASSETS_DIR")
+              for path in paths:
+                  require(path.is_file() and not path.is_symlink(), "Release assets must be regular files directly in RELEASE_ASSETS_DIR: " + path.name)
+              check_asset_names([path.name for path in paths], kind)
+              return {path.name: digest(path) for path in paths}
+
+
           def check_bundle(directory, kind, sha, expected_version=None):
               metadata = json.loads((directory / "metadata.json").read_text())
               require(metadata["kind"] == kind and metadata["sha"] == sha, "Artifact belongs to another release commit or ecosystem")
@@ -687,6 +743,7 @@ jobs:
                   require(digest(directory / name) == sha256, "Release artifact checksum mismatch: " + name)
               expected = {"notes.md"} | ({"package.tgz"} if kind == "npm" else {"package.crate", "upload.bin"} if kind == "rust" else set())
               require(set(metadata["files"]) == expected, "Incomplete release bundle")
+              check_asset_names(list(metadata.get("assets", {})), kind)
               return metadata
 
           import struct
@@ -747,7 +804,31 @@ jobs:
               raise RuntimeError(f"npm publish exit {result.returncode}; version not confirmed. Rerun this job after checking registry status.")
 
 
-          def ensure_github_release(metadata, archive):
+          def incoming_assets(directory, metadata, kind):
+              """Asset files built by this run; a run restored from a published release has none."""
+              if not metadata.get("assets") or not directory.exists():
+                  return {}
+              require(asset_files(directory, kind) == metadata["assets"], "Release asset files differ from the sealed bundle")
+              return {name: directory / name for name in metadata["assets"]}
+
+
+          def attach_asset(release, name, sha256, path, content_type="application/octet-stream"):
+              assets = [a for a in release["assets"] if a["name"] == name]
+              require(len(assets) <= 1, "Duplicate release assets named " + name)
+              if assets and assets[0].get("digest") != "sha256:" + sha256:
+                  # A draft is unpublished, so a rebuilt file may replace one left by an interrupted run.
+                  require(release["draft"], "Existing GitHub release asset " + name + " differs; refusing to replace it")
+                  github("/releases/assets/" + str(assets[0]["id"]), method="DELETE")
+                  assets = []
+              if not assets:
+                  require(path is not None, "GitHub release lacks sealed asset " + name + " and this run has no copy; investigate the release")
+                  upload = release["upload_url"].split("{", 1)[0] + "?name=" + urllib.parse.quote(name)
+                  uploaded = request(upload, token=os.environ.get("GH_TOKEN"), method="POST", data=Path(path).read_bytes(), content_type=content_type)
+                  require(uploaded.get("name") in (None, name), "GitHub renamed release asset " + name)
+                  require(uploaded.get("digest") in (None, "sha256:" + sha256), "GitHub stored different bytes for release asset " + name)
+
+
+          def ensure_github_release(metadata, archive, assets=None):
               commit = tag_commit(metadata["tag"])
               require(commit is None or commit == metadata["sha"], "Existing tag points at another commit")
               if commit is None:
@@ -762,17 +843,14 @@ jobs:
                       "tag_name": metadata["tag"], "target_commitish": metadata["sha"], "name": metadata["version"],
                       "body": Path("notes.md").read_text(), "prerelease": prerelease, "draft": True})
               require(release["prerelease"] == prerelease, "Existing GitHub release has incompatible prerelease state")
-              assets = [a for a in release["assets"] if a["name"] == archive.name]
-              require(len(assets) <= 1, "Duplicate release bundle assets")
-              if assets and assets[0].get("digest") != "sha256:" + digest(archive):
-                  # A draft is unpublished, so a rebuilt bundle may replace one left by an interrupted run.
-                  require(release["draft"], "Existing GitHub release bundle differs; refusing to replace it")
-                  github("/releases/assets/" + str(assets[0]["id"]), method="DELETE")
-                  assets = []
-              if not assets:
-                  upload = release["upload_url"].split("{", 1)[0] + "?name=" + urllib.parse.quote(archive.name)
-                  uploaded = request(upload, token=os.environ.get("GH_TOKEN"), method="POST", data=archive.read_bytes(), content_type="application/zip")
-                  require(uploaded.get("digest") in (None, "sha256:" + digest(archive)), "GitHub stored different release bundle bytes")
+              sealed = metadata.get("assets")
+              if release["draft"] and sealed:
+                  # The published release must offer exactly the sealed files, not leftovers from an earlier build.
+                  for stale in [a for a in release["assets"] if a["name"] not in {archive.name, *sealed}]:
+                      github("/releases/assets/" + str(stale["id"]), method="DELETE")
+              attach_asset(release, archive.name, digest(archive), archive, "application/zip")
+              for name, sha256 in (sealed or {}).items():
+                  attach_asset(release, name, sha256, (assets or {}).get(name))
               if release["draft"]:
                   github("/releases/" + str(release["id"]), method="PATCH",
                          data={"draft": False, "make_latest": "false" if prerelease else "legacy"})
@@ -857,6 +935,7 @@ jobs:
                   zipped.extractall(dest)
               os.chdir(dest)
               metadata = check_bundle(dest, kind, os.environ["GITHUB_SHA"], os.environ["VERSION"])
+              assets = incoming_assets(archive.parent / "release-assets", metadata, kind)
               name = metadata["name"]
               owner = os.environ["GITHUB_REPOSITORY"].split("/")[0].lower()
               if kind == "npm":
@@ -883,7 +962,7 @@ jobs:
                   cargo_matches(metadata)
               elif commit is not None or go_proxy_known(metadata):
                   go_proxy_info(metadata)
-              ensure_github_release(metadata, archive)
+              ensure_github_release(metadata, archive, assets)
               if kind == "npm":
                   npm_publish(metadata, "https://registry.npmjs.org")
               elif kind == "rust":

@@ -257,6 +257,97 @@ class BundleTest(unittest.TestCase):
                 TOOLS.check_bundle(directory, "npm", "release-commit", "1.2.3")
 
 
+class ReleaseAssetsTest(unittest.TestCase):
+    def test_returns_digests_of_flat_regular_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "tool_linux_amd64.tar.gz").write_bytes(b"binary")
+            (directory / "checksums.txt").write_bytes(b"sums")
+            self.assertEqual(TOOLS.asset_files(directory, "go"), {
+                "checksums.txt": TOOLS.hashlib.sha256(b"sums").hexdigest(),
+                "tool_linux_amd64.tar.gz": TOOLS.hashlib.sha256(b"binary").hexdigest(),
+            })
+
+    def test_rejects_an_empty_directory_subdirectories_and_symlinks(self):
+        for setup, message in (
+            (lambda d: None, "left no files"),
+            (lambda d: (d / "nested").mkdir(), "regular files directly"),
+            (lambda d: ((d / "target").write_bytes(b"x"), (d / "link").symlink_to(d / "target")), "regular files directly"),
+        ):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as temporary:
+                setup(Path(temporary))
+                with self.assertRaisesRegex(ValueError, message):
+                    TOOLS.asset_files(temporary, "go")
+
+    def test_rejects_names_github_would_change_or_that_collide(self):
+        for names in ([".hidden"], ["two words.txt"], ["trailing."], ["plus+sign"], ["release-go.zip"], ["Release-Go.zip"], ["path/name"]):
+            with self.subTest(names=names):
+                with self.assertRaisesRegex(ValueError, "Release asset names use"):
+                    TOOLS.check_asset_names(names, "go")
+        with self.assertRaisesRegex(ValueError, "differ in more than letter case"):
+            TOOLS.check_asset_names(["Tool.tar.gz", "tool.tar.gz"], "go")
+        TOOLS.check_asset_names(["release-npm.zip", "tool_1.2.3_linux_arm64.tar.gz"], "go")
+
+    def test_check_bundle_rejects_an_invalid_sealed_asset_name(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "notes.md").write_text("- Release\n")
+            metadata = {"kind": "go", "sha": "release-commit", "version": "1.2.3", "tag": "v1.2.3",
+                        "files": {"notes.md": TOOLS.digest(directory / "notes.md")}, "assets": {"../escape": "0" * 64}}
+            (directory / "metadata.json").write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "Release asset names use"):
+                TOOLS.check_bundle(directory, "go", "release-commit", "1.2.3")
+
+    def test_bundle_seals_asset_digests_but_not_their_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp = Path(temporary)
+            (temp / "release-bundle").mkdir()
+            (temp / "release-assets").mkdir()
+            (temp / "release-assets" / "tool.tar.gz").write_bytes(b"binary")
+            (temp / "release-bundle" / "notes.md").write_text("- Release\n")
+            TOOLS.write_json(temp / "release-bundle" / "metadata.json", {
+                "kind": "go", "sha": "release-commit", "version": "1.2.3", "tag": "v1.2.3",
+                "name": "github.com/BonfireTrunk/example"})
+            with patch.dict(os.environ, {"RUNNER_TEMP": temporary, "RELEASE_ASSETS": "true"}, clear=True):
+                TOOLS.bundle()
+            metadata = json.loads((temp / "release-bundle" / "metadata.json").read_text())
+            self.assertEqual(metadata["assets"], {"tool.tar.gz": TOOLS.hashlib.sha256(b"binary").hexdigest()})
+            with TOOLS.zipfile.ZipFile(temp / "release-go.zip") as zipped:
+                self.assertEqual(sorted(zipped.namelist()), ["metadata.json", "notes.md"])
+
+    def test_bundle_ignores_a_stray_asset_directory_unless_assets_were_requested(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            temp = Path(temporary)
+            (temp / "release-bundle").mkdir()
+            (temp / "release-assets" / "nested").mkdir(parents=True)
+            (temp / "release-bundle" / "notes.md").write_text("- Release\n")
+            TOOLS.write_json(temp / "release-bundle" / "metadata.json", {
+                "kind": "go", "sha": "release-commit", "version": "1.2.3", "tag": "v1.2.3",
+                "name": "github.com/BonfireTrunk/example"})
+            for flag in (None, "false"):
+                with self.subTest(flag=flag), patch.dict(os.environ, {"RUNNER_TEMP": temporary, **({"RELEASE_ASSETS": flag} if flag else {})}, clear=True):
+                    TOOLS.bundle()
+                    self.assertNotIn("assets", json.loads((temp / "release-bundle" / "metadata.json").read_text()))
+                    (temp / "release-go.zip").unlink()
+
+    def test_publish_uses_incoming_files_only_when_they_match_sealed_assets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "release-assets"
+            sealed = {"tool.tar.gz": TOOLS.hashlib.sha256(b"binary").hexdigest()}
+            self.assertEqual(TOOLS.incoming_assets(directory, {"assets": sealed}, "go"), {})
+            directory.mkdir()
+            (directory / "tool.tar.gz").write_bytes(b"binary")
+            self.assertEqual(TOOLS.incoming_assets(directory, {"assets": sealed}, "go"), {"tool.tar.gz": directory / "tool.tar.gz"})
+            self.assertEqual(TOOLS.incoming_assets(directory, {}, "go"), {})
+            (directory / "tool.tar.gz").write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "differ from the sealed bundle"):
+                TOOLS.incoming_assets(directory, {"assets": sealed}, "go")
+            (directory / "tool.tar.gz").write_bytes(b"binary")
+            (directory / "extra.txt").write_bytes(b"extra")
+            with self.assertRaisesRegex(ValueError, "differ from the sealed bundle"):
+                TOOLS.incoming_assets(directory, {"assets": sealed}, "go")
+
+
 class CratePayloadTest(unittest.TestCase):
     def write_crate(self, directory, manifest):
         archive = directory / "example-crate-1.2.3.crate"
@@ -340,6 +431,21 @@ class RenderTest(unittest.TestCase):
                 self.assertIn("artifact-ids: ${{ needs.build.outputs.artifact-id }}", workflow)
                 self.assertIn(f"name: release-{kind}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}", workflow)
                 self.assertEqual(workflow.count("github.run_attempt"), 1)
+
+    def test_only_go_builds_assets_and_passes_the_command_through_the_environment(self):
+        workflow = RENDER.render("go")
+        self.assertEqual(workflow.count("${{ inputs.assets-command }}"), 1)
+        self.assertIn("          ASSETS_COMMAND: ${{ inputs.assets-command }}\n", workflow)
+        self.assertIn('          bash -eo pipefail -c "$ASSETS_COMMAND"\n', workflow)
+        self.assertLess(workflow.index("go vet ./..."), workflow.index("name: Build release assets"))
+        self.assertLess(workflow.index("name: Build release assets"), workflow.index("name: Seal the release bundle"))
+        self.assertIn("          path: |\n            ${{ runner.temp }}/release-go.zip\n"
+                      "            ${{ runner.temp }}/release-assets\n", workflow)
+        for kind in ("npm", "rust"):
+            with self.subTest(kind=kind):
+                self.assertNotIn("assets-command:", RENDER.render(kind))
+                self.assertNotIn("inputs.assets-command", RENDER.render(kind))
+                self.assertNotIn("${{ runner.temp }}/release-assets", RENDER.render(kind))
 
 
 class PublishTest(unittest.TestCase):
@@ -522,6 +628,96 @@ class PublishTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "refusing to replace it"):
                 self.run_ensure_release(temporary, archive, metadata, github)
             github.assert_called_once()
+
+    def asset_fixture(self, temporary, metadata, files):
+        directory = Path(temporary) / "release-assets"
+        directory.mkdir()
+        for name, content in files.items():
+            (directory / name).write_bytes(content)
+        metadata["assets"] = {name: TOOLS.hashlib.sha256(content).hexdigest() for name, content in files.items()}
+        return {name: directory / name for name in files}
+
+    def run_ensure_release_with_assets(self, temporary, archive, metadata, github, assets):
+        def uploaded(url, **kwargs):
+            return {"name": TOOLS.urllib.parse.unquote(url.split("?name=", 1)[1]),
+                    "digest": "sha256:" + TOOLS.hashlib.sha256(kwargs["data"]).hexdigest()}
+        environment = {"GITHUB_REPOSITORY": "BonfireTrunk/example", "GH_TOKEN": "token"}
+        with patch.dict(os.environ, environment, clear=True), contextlib.chdir(temporary), \
+                patch.object(TOOLS, "tag_commit", return_value="release-commit"), \
+                patch.object(TOOLS, "github", github), \
+                patch.object(TOOLS, "request", side_effect=uploaded) as request:
+            TOOLS.ensure_github_release(metadata, archive, assets)
+        return request
+
+    def test_ensure_github_release_attaches_sealed_assets_to_the_draft_before_publishing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            metadata, archive = self.release_fixture(temporary)
+            assets = self.asset_fixture(temporary, metadata, {"tool_linux_amd64.tar.gz": b"binary", "checksums.txt": b"sums"})
+            github = Mock(side_effect=[None, [], self.draft(), None])
+            request = self.run_ensure_release_with_assets(temporary, archive, metadata, github, assets)
+            uploads = [(call.args[0].split("?name=", 1)[1], call.kwargs["content_type"]) for call in request.call_args_list]
+            self.assertEqual(uploads, [("release-npm.zip", "application/zip"),
+                                       ("tool_linux_amd64.tar.gz", "application/octet-stream"),
+                                       ("checksums.txt", "application/octet-stream")])
+            self.assertEqual(github.call_args_list[3].kwargs["data"]["draft"], False)
+
+    def test_ensure_github_release_replaces_changed_and_removes_unsealed_draft_assets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            metadata, archive = self.release_fixture(temporary)
+            assets = self.asset_fixture(temporary, metadata, {"tool.tar.gz": b"rebuilt", "checksums.txt": b"sums"})
+            bundle = {"id": 10, "name": "release-npm.zip", "digest": "sha256:" + TOOLS.digest(archive)}
+            changed = {"id": 11, "name": "tool.tar.gz", "digest": "sha256:" + "0" * 64}
+            same = {"id": 12, "name": "checksums.txt", "digest": "sha256:" + metadata["assets"]["checksums.txt"]}
+            leftover = {"id": 13, "name": "old-name.tar.gz", "digest": "sha256:" + "1" * 64}
+            github = Mock(side_effect=[None, [self.draft([bundle, changed, same, leftover])], None, None, None])
+            request = self.run_ensure_release_with_assets(temporary, archive, metadata, github, assets)
+            deleted = [call.args[0] for call in github.call_args_list if call.kwargs.get("method") == "DELETE"]
+            self.assertEqual(deleted, ["/releases/assets/13", "/releases/assets/11"])
+            self.assertEqual([call.args[0].split("?name=", 1)[1] for call in request.call_args_list], ["tool.tar.gz"])
+            self.assertEqual(github.call_args_list[-1].kwargs["data"]["draft"], False)
+
+    def test_ensure_github_release_keeps_unsealed_draft_assets_without_sealed_assets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            metadata, archive = self.release_fixture(temporary)
+            bundle = {"id": 10, "name": "release-npm.zip", "digest": "sha256:" + TOOLS.digest(archive)}
+            other = {"id": 13, "name": "notes.txt", "digest": "sha256:" + "1" * 64}
+            github = Mock(side_effect=[None, [self.draft([bundle, other])], None])
+            request = self.run_ensure_release(temporary, archive, metadata, github)
+            self.assertNotIn("DELETE", [call.kwargs.get("method") for call in github.call_args_list])
+            request.assert_not_called()
+
+    def test_ensure_github_release_checks_published_assets_without_replacing_them(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            metadata, archive = self.release_fixture(temporary)
+            metadata["assets"] = {"tool.tar.gz": TOOLS.hashlib.sha256(b"binary").hexdigest()}
+            bundle = {"id": 10, "name": "release-npm.zip", "digest": "sha256:" + TOOLS.digest(archive)}
+            exact = {"id": 11, "name": "tool.tar.gz", "digest": "sha256:" + metadata["assets"]["tool.tar.gz"]}
+            unsealed = {"id": 12, "name": "added-later.txt", "digest": "sha256:" + "1" * 64}
+            github = Mock(side_effect=[dict(self.draft([bundle, exact, unsealed]), draft=False)])
+            request = self.run_ensure_release_with_assets(temporary, archive, metadata, github, {})
+            request.assert_not_called()
+            github.assert_called_once()
+            published = dict(self.draft([bundle, exact]), draft=False)
+            conflict = dict(exact, digest="sha256:" + "0" * 64)
+            with self.assertRaisesRegex(ValueError, "tool.tar.gz differs; refusing to replace it"):
+                self.run_ensure_release_with_assets(temporary, archive, metadata,
+                                                    Mock(side_effect=[dict(published, assets=[bundle, conflict])]), {})
+            with self.assertRaisesRegex(ValueError, "lacks sealed asset tool.tar.gz"):
+                self.run_ensure_release_with_assets(temporary, archive, metadata,
+                                                    Mock(side_effect=[dict(published, assets=[bundle])]), {})
+
+    def test_ensure_github_release_rejects_an_asset_that_github_renamed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            metadata, archive = self.release_fixture(temporary)
+            assets = self.asset_fixture(temporary, metadata, {"tool.tar.gz": b"binary"})
+            environment = {"GITHUB_REPOSITORY": "BonfireTrunk/example", "GH_TOKEN": "token"}
+            responses = [{"digest": "sha256:" + TOOLS.digest(archive)}, {"name": "tool.tar.gz.renamed"}]
+            with patch.dict(os.environ, environment, clear=True), contextlib.chdir(temporary), \
+                    patch.object(TOOLS, "tag_commit", return_value="release-commit"), \
+                    patch.object(TOOLS, "github", Mock(side_effect=[None, [], self.draft()])), \
+                    patch.object(TOOLS, "request", side_effect=responses):
+                with self.assertRaisesRegex(ValueError, "GitHub renamed release asset tool.tar.gz"):
+                    TOOLS.ensure_github_release(metadata, archive, assets)
 
     def test_ensure_github_release_leaves_a_complete_published_release_alone(self):
         with tempfile.TemporaryDirectory() as temporary:

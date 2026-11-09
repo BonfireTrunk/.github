@@ -123,6 +123,23 @@ def output(**values):
             stream.write(f"{key}={value}\n")
 
 
+def check_asset_names(names, kind):
+    for name in names:
+        # GitHub renames asset files with other characters, which would break download links.
+        require(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", name) and name.lower() != "release-" + kind + ".zip",
+                "Release asset names use letters, digits, '.', '_' and '-', start and end with a letter or digit, and cannot be release-" + kind + ".zip: " + name)
+    require(len({name.lower() for name in names}) == len(names), "Release asset names must differ in more than letter case")
+
+
+def asset_files(directory, kind):
+    paths = sorted(Path(directory).iterdir())
+    require(paths, "assets-command left no files in RELEASE_ASSETS_DIR")
+    for path in paths:
+        require(path.is_file() and not path.is_symlink(), "Release assets must be regular files directly in RELEASE_ASSETS_DIR: " + path.name)
+    check_asset_names([path.name for path in paths], kind)
+    return {path.name: digest(path) for path in paths}
+
+
 def check_bundle(directory, kind, sha, expected_version=None):
     metadata = json.loads((directory / "metadata.json").read_text())
     require(metadata["kind"] == kind and metadata["sha"] == sha, "Artifact belongs to another release commit or ecosystem")
@@ -136,4 +153,5 @@ def check_bundle(directory, kind, sha, expected_version=None):
         require(digest(directory / name) == sha256, "Release artifact checksum mismatch: " + name)
     expected = {"notes.md"} | ({"package.tgz"} if kind == "npm" else {"package.crate", "upload.bin"} if kind == "rust" else set())
     require(set(metadata["files"]) == expected, "Incomplete release bundle")
+    check_asset_names(list(metadata.get("assets", {})), kind)
     return metadata

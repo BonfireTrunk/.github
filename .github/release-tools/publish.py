@@ -56,7 +56,31 @@ def npm_publish(metadata, registry, token=None):
     raise RuntimeError(f"npm publish exit {result.returncode}; version not confirmed. Rerun this job after checking registry status.")
 
 
-def ensure_github_release(metadata, archive):
+def incoming_assets(directory, metadata, kind):
+    """Asset files built by this run; a run restored from a published release has none."""
+    if not metadata.get("assets") or not directory.exists():
+        return {}
+    require(asset_files(directory, kind) == metadata["assets"], "Release asset files differ from the sealed bundle")
+    return {name: directory / name for name in metadata["assets"]}
+
+
+def attach_asset(release, name, sha256, path, content_type="application/octet-stream"):
+    assets = [a for a in release["assets"] if a["name"] == name]
+    require(len(assets) <= 1, "Duplicate release assets named " + name)
+    if assets and assets[0].get("digest") != "sha256:" + sha256:
+        # A draft is unpublished, so a rebuilt file may replace one left by an interrupted run.
+        require(release["draft"], "Existing GitHub release asset " + name + " differs; refusing to replace it")
+        github("/releases/assets/" + str(assets[0]["id"]), method="DELETE")
+        assets = []
+    if not assets:
+        require(path is not None, "GitHub release lacks sealed asset " + name + " and this run has no copy; investigate the release")
+        upload = release["upload_url"].split("{", 1)[0] + "?name=" + urllib.parse.quote(name)
+        uploaded = request(upload, token=os.environ.get("GH_TOKEN"), method="POST", data=Path(path).read_bytes(), content_type=content_type)
+        require(uploaded.get("name") in (None, name), "GitHub renamed release asset " + name)
+        require(uploaded.get("digest") in (None, "sha256:" + sha256), "GitHub stored different bytes for release asset " + name)
+
+
+def ensure_github_release(metadata, archive, assets=None):
     commit = tag_commit(metadata["tag"])
     require(commit is None or commit == metadata["sha"], "Existing tag points at another commit")
     if commit is None:
@@ -71,17 +95,14 @@ def ensure_github_release(metadata, archive):
             "tag_name": metadata["tag"], "target_commitish": metadata["sha"], "name": metadata["version"],
             "body": Path("notes.md").read_text(), "prerelease": prerelease, "draft": True})
     require(release["prerelease"] == prerelease, "Existing GitHub release has incompatible prerelease state")
-    assets = [a for a in release["assets"] if a["name"] == archive.name]
-    require(len(assets) <= 1, "Duplicate release bundle assets")
-    if assets and assets[0].get("digest") != "sha256:" + digest(archive):
-        # A draft is unpublished, so a rebuilt bundle may replace one left by an interrupted run.
-        require(release["draft"], "Existing GitHub release bundle differs; refusing to replace it")
-        github("/releases/assets/" + str(assets[0]["id"]), method="DELETE")
-        assets = []
-    if not assets:
-        upload = release["upload_url"].split("{", 1)[0] + "?name=" + urllib.parse.quote(archive.name)
-        uploaded = request(upload, token=os.environ.get("GH_TOKEN"), method="POST", data=archive.read_bytes(), content_type="application/zip")
-        require(uploaded.get("digest") in (None, "sha256:" + digest(archive)), "GitHub stored different release bundle bytes")
+    sealed = metadata.get("assets")
+    if release["draft"] and sealed:
+        # The published release must offer exactly the sealed files, not leftovers from an earlier build.
+        for stale in [a for a in release["assets"] if a["name"] not in {archive.name, *sealed}]:
+            github("/releases/assets/" + str(stale["id"]), method="DELETE")
+    attach_asset(release, archive.name, digest(archive), archive, "application/zip")
+    for name, sha256 in (sealed or {}).items():
+        attach_asset(release, name, sha256, (assets or {}).get(name))
     if release["draft"]:
         github("/releases/" + str(release["id"]), method="PATCH",
                data={"draft": False, "make_latest": "false" if prerelease else "legacy"})
@@ -166,6 +187,7 @@ def publish():
         zipped.extractall(dest)
     os.chdir(dest)
     metadata = check_bundle(dest, kind, os.environ["GITHUB_SHA"], os.environ["VERSION"])
+    assets = incoming_assets(archive.parent / "release-assets", metadata, kind)
     name = metadata["name"]
     owner = os.environ["GITHUB_REPOSITORY"].split("/")[0].lower()
     if kind == "npm":
@@ -192,7 +214,7 @@ def publish():
         cargo_matches(metadata)
     elif commit is not None or go_proxy_known(metadata):
         go_proxy_info(metadata)
-    ensure_github_release(metadata, archive)
+    ensure_github_release(metadata, archive, assets)
     if kind == "npm":
         npm_publish(metadata, "https://registry.npmjs.org")
     elif kind == "rust":
