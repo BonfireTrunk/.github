@@ -112,6 +112,41 @@ The workflows refuse layouts they cannot publish safely:
 
 The caller repository must be public. Protect its default branch and release tags so only reviewed changes can reach this workflow. The workflow creates the `v*` tag itself with the workflow token, so a tag ruleset should block updating and deleting `v*` tags but not creating them, unless the ruleset lets the workflow bypass it. Enabling GitHub's immutable releases also locks each release tag once the workflow publishes the release. The release job always names a GitHub environment: `release` by default, or the nonempty `release-environment` input. Create and configure that matching environment in every caller repository before publishing. GitHub can automatically create a missing environment without protection, so naming it alone is not an approval gate. Required reviewers and branch/tag restrictions are configured by the repository owner.
 
+## Go release assets
+
+`go-release.yml` can attach files the repository builds, such as binaries and a checksum file, to the GitHub release. Set the optional `assets-command` input to a shell command:
+
+```yaml
+    uses: BonfireTrunk/.github/.github/workflows/go-release.yml@<shared-workflow-commit>
+    with:
+      assets-command: ./scripts/release-assets.sh
+```
+
+The command runs in the build job after `go test` and `go vet`, from the repository root at the release commit, with these variables:
+
+| Variable | Value |
+| :-- | :-- |
+| `RELEASE_VERSION` | The validated full version, for example `1.2.0` for a `Release 1.2` title |
+| `RELEASE_TAG` | `v` followed by the version, for example `v1.2.0` |
+| `RELEASE_ASSETS_DIR` | An empty directory; every file the command leaves in it becomes a release asset |
+
+The publish job creates the tag after the build, so on a first attempt the tag does not exist yet while the command runs; a retry after an interrupted run may find it already pointing at the release commit. Tools that read the version from a Git tag should take it from these variables instead.
+
+```mermaid
+flowchart LR
+  A[Validate release] --> B[go test, go vet] --> C[assets-command] --> D[Seal digests]
+  D --> E[Tag and draft release] --> F[Attach bundle and assets] --> G[Publish release] --> H[Verify Go proxy]
+```
+
+| Rule | Detail |
+| :-- | :-- |
+| Environment | The build job's read-only token, no secrets, no OIDC, `ubuntu-24.04`, the Go version from `go.mod`, and the job's 30-minute limit. Install tools from the command at pinned versions, for example with `go run <module>@<version>`, which Go verifies against the public checksum database. |
+| Names | Regular files directly in `RELEASE_ASSETS_DIR`, named with letters, digits, `.`, `_` and `-`, starting and ending with a letter or digit, not differing only in letter case, and not `release-go.zip`. Names are kept as given, so a name without a version keeps working through `releases/latest/download/<name>`. |
+| Failure | A failing command, or one that leaves no files, stops the release before anything is tagged or published. |
+| Integrity | The release bundle records each file's SHA-256. The publish job checks every file against it, attaches the files to the draft release next to `release-go.zip`, and only then publishes the release. The bundle holds digests, not the files, so the release stores each file once. |
+| Retries | Rerunning the failed publish job uses the same files. A run that finds the release already published skips the command and checks the release's files against the recorded digests; it never replaces them. A run that finds an unpublished draft replaces files that changed and removes every other file except `release-go.zip`, including files added to the draft by hand, so the release is published with exactly the recorded files. A run without `assets-command` leaves a draft's files alone. |
+| Scope | Only GitHub release assets. Push container images or other packages from a separate caller job that runs after the release. |
+
 ## Untrusted pull requests
 
 Use the documented `pull_request` build trigger. Fork PR jobs receive a read-only GitHub token and no repository publishing secrets under GitHub's normal fork policy. These build workflows request neither write permissions nor OIDC credentials. Release jobs reject PR events and run package scripts separately from the job holding publishing credentials. Embedded Python helpers use isolated mode so checkout files and `PYTHONPATH` cannot replace their standard-library imports.
@@ -144,7 +179,7 @@ Go modules have no GitHub Packages publishing step. A semantic Git tag and publi
 
 ## Retries and immutable artifacts
 
-Before a release changes a registry, it verifies the release title or retry tag, the commit, manifest, changelog, version, and any existing tag. The build job creates one release bundle containing the notes and, where applicable, the package archive. It passes that one immutable GitHub Actions artifact to the publish job by artifact ID. The GitHub release stores the same bundle with its SHA-256 digest.
+Before a release changes a registry, it verifies the release title or retry tag, the commit, manifest, changelog, version, and any existing tag. The build job creates one release bundle containing the notes and, where applicable, the package archive. It passes that one immutable GitHub Actions artifact, with any Go release assets beside the bundle, to the publish job by artifact ID. The GitHub release stores the same bundle with its SHA-256 digest.
 
 The GitHub release is created as a draft, the bundle is attached, and only then is the release published. This works with GitHub's immutable releases, which reject assets once a release is published. A rebuilt bundle may replace the asset of a draft left by an interrupted run; a published release's bundle is never replaced.
 
@@ -154,7 +189,7 @@ Rerunning only the failed publish job uses its original artifact ID. A new dispa
 | :-- | :-- |
 | npm | Build one tarball, GitHub Packages, Git tag and release with bundle, npmjs.com |
 | Rust | Test/package one crate, Git tag and release with bundle, crates.io |
-| Go | Test/vet, Git tag and release, verified `proxy.golang.org` availability |
+| Go | Test/vet and any release assets, Git tag and release with bundle and assets, verified `proxy.golang.org` availability |
 
 Release runs for one repository run one at a time, in order; up to 100 can wait. A queued release is not cancelled by a later one.
 
